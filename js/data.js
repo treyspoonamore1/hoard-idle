@@ -287,4 +287,22 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
   HOARD.fmt = fmt;
   HOARD.fmtRate = fmtRate;
   HOARD.fmtTime = fmtTime;
+
+  // ---------------------------------------------------------------- boot hook (v2)
+  // Browser modules that load before ui.js (log.js, sound.js) register UI here; main.js runs the queue
+  // once, right after ui.init (fn receives getState). Registered after boot -> runs immediately.
+  var readyQ = [], readyGet = null;
+  HOARD.whenReady = function (fn) {
+    if (typeof fn !== 'function') return;
+    if (readyGet) { try { fn(readyGet); } catch (e) { try { console.error('[HOARD] whenReady', e); } catch (e2) { /* ignore */ } } }
+    else readyQ.push(fn);
+  };
+  HOARD._runReady = function (getState) {
+    if (readyGet) return;
+    readyGet = getState;
+    var q = readyQ.splice(0);
+    for (var i = 0; i < q.length; i++) {
+      try { q[i](getState); } catch (e) { try { console.error('[HOARD] whenReady', e); } catch (e2) { /* ignore */ } }
+    }
+  };
 })();

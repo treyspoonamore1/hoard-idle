@@ -1,5 +1,6 @@
-/* Hoard — game rules. Pure state functions, save/load, offline progress.
- * Classic script; never touches the DOM. Runs in Node via vm.runInThisContext. */
+/* Hoard — game rules. Pure state functions, save/load (with versioned migrations), offline progress,
+ * and the v2 extension points (modifier pipeline, tick/sleep hooks, state defaults, card registry).
+ * Classic script; never touches the DOM. Runs in Node via vm.runInThisContext. See EXTENSIONS.md. */
 (function () {
   'use strict';
   var G = globalThis;
@@ -7,6 +8,7 @@
   var D = HOARD.data;
   var C = D.C;
   var MAXN = C.maxNum;
+  var VERSION = 2;
 
   // ================================================================ helpers
   function fin(x, d) { x = +x; return isFinite(x) ? x : (d === undefined ? 0 : d); }
@@ -20,11 +22,65 @@
   function pos(x) { x = cl(x); return x > 0 ? x : 0; }
   function clamp(x, a, b) { x = fin(x, a); return x < a ? a : (x > b ? b : x); }
   function isObj(o) { return o !== null && typeof o === 'object' && !Array.isArray(o); }
+  function logErr(tag, e) { try { console.error('[HOARD] ' + tag, e); } catch (e2) { /* ignore */ } }
 
-  var BIDX = {}; D.buildings.forEach(function (b, i) { BIDX[b.id] = i; });
-  var UIDX = {}; D.upgrades.forEach(function (u, i) { UIDX[u.id] = i; });
-  var CIDX = {}; D.cards.forEach(function (c, i) { CIDX[c.id] = i; });
-  var CARD_BY_TARGET = {}; D.cards.forEach(function (c) { CARD_BY_TARGET[c.target] = c.id; });
+  // JSON-safe deep copy: finite numbers only, no functions, no `_`-prefixed keys, bounded depth/size
+  function jsonSafe(v, depth) {
+    depth = depth || 0;
+    if (depth > 10) return null;
+    if (v === null) return null;
+    var t = typeof v;
+    if (t === 'number') return isFinite(v) ? cl(v) : 0;
+    if (t === 'boolean') return v;
+    if (t === 'string') return v.length > 20000 ? v.slice(0, 20000) : v;
+    if (Array.isArray(v)) {
+      var a = [];
+      for (var i = 0; i < v.length && i < 5000; i++) { var x = jsonSafe(v[i], depth + 1); a.push(x === undefined ? null : x); }
+      return a;
+    }
+    if (t === 'object') {
+      var o = {}, n = 0;
+      for (var k in v) {
+        if (!Object.prototype.hasOwnProperty.call(v, k) || k.charAt(0) === '_') continue;
+        if (++n > 2000) break;
+        var y = jsonSafe(v[k], depth + 1);
+        if (y !== undefined) o[k] = y;
+      }
+      return o;
+    }
+    return undefined;
+  }
+  function clone(o) { var r = jsonSafe(o); return r === undefined ? null : r; }
+  // fill a saved subtree from its defaults: keeps saved values whose type matches the default;
+  // an empty-object default ({}) is a free-form map (all JSON-safe entries kept); extra saved keys are kept too
+  function fillDefaults(def, saved) {
+    if (Array.isArray(def)) return Array.isArray(saved) ? jsonSafe(saved) : jsonSafe(def);
+    if (isObj(def)) {
+      var out = {}, k;
+      var src = isObj(saved) ? saved : {};
+      for (k in def) if (Object.prototype.hasOwnProperty.call(def, k)) out[k] = fillDefaults(def[k], src[k]);
+      for (k in src) {
+        if (!Object.prototype.hasOwnProperty.call(src, k) || k.charAt(0) === '_' || Object.prototype.hasOwnProperty.call(out, k)) continue;
+        var y = jsonSafe(src[k]);
+        if (y !== undefined) out[k] = y;
+      }
+      return out;
+    }
+    if (typeof def === 'number') return (typeof saved === 'number' && isFinite(saved)) ? cl(saved) : def;
+    if (typeof def === 'boolean') return typeof saved === 'boolean' ? saved : def;
+    if (typeof def === 'string') return typeof saved === 'string' ? jsonSafe(saved) : def;
+    if (def === null) { var z = jsonSafe(saved); return z === undefined ? null : z; }
+    return jsonSafe(def);
+  }
+  function jsonMap(v) { return isObj(v) ? jsonSafe(v) : {}; }
+
+  var BIDX = {}, UIDX = {}, CIDX = {};
+  function rebuildIndexes() {
+    BIDX = {}; D.buildings.forEach(function (b, i) { BIDX[b.id] = i; });
+    UIDX = {}; D.upgrades.forEach(function (u, i) { UIDX[u.id] = i; });
+    CIDX = {}; D.cards.forEach(function (c, i) { CIDX[c.id] = i; });
+  }
+  rebuildIndexes();
   function bdef(id) { return BIDX.hasOwnProperty(id) ? D.buildings[BIDX[id]] : null; }
   function udef(id) { return UIDX.hasOwnProperty(id) ? D.upgrades[UIDX[id]] : null; }
   function cdef(id) { return CIDX.hasOwnProperty(id) ? D.cards[CIDX[id]] : null; }
@@ -46,22 +102,93 @@
     if (typeof fn !== 'function' || typeof name !== 'string') return;
     (listeners[name] = listeners[name] || []).push(fn);
   }
+  function off(name, fn) {
+    var ls = listeners[name];
+    if (!ls) return;
+    var i = ls.indexOf(fn);
+    if (i >= 0) ls.splice(i, 1);
+  }
   function emit(name, payload) {
     if (quiet > 0) return;
     var ls = listeners[name];
     if (!ls) return;
+    ls = ls.slice();
     for (var i = 0; i < ls.length; i++) {
-      try { ls[i](payload); } catch (e) { try { console.error(e); } catch (e2) { /* ignore */ } }
+      try { ls[i](payload); } catch (e) { logErr('event ' + name, e); }
     }
   }
 
+  // ================================================================ extension registries
+  var modSources = [];    // { name, fn(state, M) }
+  var tickHooks = [];     // { name, fn(state, dt, isOffline) }
+  var sleepHooks = [];    // { name, fn(state, prevSnapshot, reason) }
+  var stateDefs = [];     // { name, fn() -> default subtree, sanitize?(saved, defaults) -> subtree }
+  var errCount = {};
+  function upsert(list, item) {
+    for (var i = 0; i < list.length; i++) if (list[i].name === item.name) { list[i] = item; return; }
+    list.push(item);
+  }
+  function guarded(kind, item, args) {
+    var k = kind + ':' + item.name;
+    if ((errCount[k] || 0) >= 5) return; // a hook that keeps throwing is switched off
+    try { item.fn.apply(null, args); } catch (e) { errCount[k] = (errCount[k] || 0) + 1; logErr(k, e); }
+  }
+  function addModSource(name, fn) {
+    if (typeof name !== 'string' || typeof fn !== 'function') return false;
+    upsert(modSources, { name: name, fn: fn }); dirty(); return true;
+  }
+  function addTickHook(name, fn) {
+    if (typeof name !== 'string' || typeof fn !== 'function') return false;
+    upsert(tickHooks, { name: name, fn: fn }); return true;
+  }
+  function addSleepHook(name, fn) {
+    if (typeof name !== 'string' || typeof fn !== 'function') return false;
+    upsert(sleepHooks, { name: name, fn: fn }); return true;
+  }
+  var CORE_KEYS = null; // filled after baseState exists
+  function addStateDefaults(name, fn, sanitizeFn) {
+    if (typeof name !== 'string' || !name || name.charAt(0) === '_' || typeof fn !== 'function') return false;
+    if (CORE_KEYS && CORE_KEYS.indexOf(name) >= 0 && CORE_MAPS.indexOf(name) < 0) { logErr('addStateDefaults', 'core key ' + name); return false; }
+    upsert(stateDefs, { name: name, fn: fn, sanitize: typeof sanitizeFn === 'function' ? sanitizeFn : null });
+    return true;
+  }
+  function defaultsOf(def) {
+    var d = null;
+    try { d = def.fn(); } catch (e) { logErr('defaults:' + def.name, e); d = {}; }
+    var j = jsonSafe(d);
+    return j === undefined ? {} : j;
+  }
+  function sanitizeSub(def, saved) {
+    var d = defaultsOf(def);
+    if (def.sanitize) {
+      try {
+        var r = def.sanitize(saved, d);
+        var j = jsonSafe(r);
+        if (j !== undefined && j !== null) return j;
+      } catch (e) { logErr('sanitize:' + def.name, e); }
+      return d;
+    }
+    try { return fillDefaults(d, saved); } catch (e) { return d; }
+  }
+  function ensureDefaults(state) {
+    for (var i = 0; i < stateDefs.length; i++) {
+      var n = stateDefs[i].name;
+      if (state[n] === undefined || state[n] === null) state[n] = defaultsOf(stateDefs[i]);
+    }
+  }
+
+  // ================================================================ stats cache
+  var epoch = 1;
+  var cache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function dirty() { epoch++; }
+
   // ================================================================ state
-  function freshRun() { return { coins: 0, treasures: 0, gusts: 0, bestStreak: 1, swipePx: 0 }; }
+  function freshRun() { return { coins: 0, treasures: 0, gusts: 0, bestStreak: 1, swipePx: 0, playActive: 0 }; }
   function freshBuildings() { var o = {}; D.buildings.forEach(function (b) { o[b.id] = 0; }); return o; }
 
   function baseState() {
-    return {
-      v: 1,
+    var s = {
+      v: VERSION,
       gold: 0,
       earnedRun: 0,
       earnedAll: 0,
@@ -74,17 +201,30 @@
       missionSeq: 0,
       cards: {},
       chests: 0,
-      legend: 0,
+      legend: 0,       // Legend earned this Myth (drives the +10%/Legend passive bonus)
+      legendPts: 0,    // spendable Legend (v2)
       sleeps: 0,
+      myth: 0,         // Myth earned in total (v2; lore module drives it)
+      mythPts: 0,      // spendable Myth (v2)
+      myths: 0,        // Ascends taken (v2)
+      lore: {},        // lore node id -> level (v2)
+      relics: {},      // relic id -> level (v2)
+      flags: {},       // tiny shared flags (v2)
+      auto: {},        // automation toggles (v2)
       gust: 1,
       effects: [],
-      stat: { swipePx: 0, coins: 0, treasures: 0, gusts: 0, bestStreak: 1, sleepsGold: 0 },
+      stat: { swipePx: 0, coins: 0, treasures: 0, gusts: 0, bestStreak: 1, sleepsGold: 0, playActive: 0, fastestSleep: 0 },
       run: freshRun(),
       time: 0,
       savedAt: Date.now(),
       settings: { haptics: true, reducedMotion: false, buyAmt: 1 }
     };
+    for (var i = 0; i < stateDefs.length; i++) s[stateDefs[i].name] = defaultsOf(stateDefs[i]);
+    return s;
   }
+  // core subtrees a module may also register defaults for (they are free-form maps in the core state)
+  var CORE_MAPS = ['lore', 'relics', 'flags', 'auto'];
+  CORE_KEYS = Object.keys(baseState());
 
   function newState() {
     var s = baseState();
@@ -92,8 +232,27 @@
     return s;
   }
 
+  // ---------------------------------------------------------------- migrations
+  // MIGRATIONS[n](raw) upgrades a parsed save object from version n to n+1 in place.
+  var MIGRATIONS = {
+    1: function (s) {
+      // v1 -> v2: keep everything; Legend already earned becomes spendable right away
+      if (s.legendPts === undefined) s.legendPts = fin(s.legend, 0);
+      if (!isObj(s.lore)) s.lore = {};
+      if (s.myth === undefined) s.myth = 0;
+      if (s.mythPts === undefined) s.mythPts = 0;
+      if (!isObj(s.relics)) s.relics = {};
+      if (s.myths === undefined) s.myths = 0;
+      if (!isObj(s.flags)) s.flags = {};
+      if (!isObj(s.auto)) s.auto = {};
+      if (isObj(s.stat)) { if (s.stat.playActive === undefined) s.stat.playActive = 0; if (s.stat.fastestSleep === undefined) s.stat.fastestSleep = 0; }
+      if (isObj(s.run) && s.run.playActive === undefined) s.run.playActive = 0;
+      s.v = 2;
+    }
+  };
+
   function sanitize(s) {
-    // repairs a state in place (used by deserialize and defensively elsewhere)
+    // builds a clean state from a (migrated) raw save object
     var b = baseState();
     if (!isObj(s)) return b;
     var o = b;
@@ -106,34 +265,66 @@
     o.rank = Math.floor(clamp(s.rank, 1, C.maxRank));
     o.rankProgress = Math.floor(clamp(s.rankProgress, 0, 1e6));
     o.missionSeq = Math.floor(clamp(s.missionSeq, 0, 2e9));
-    if (isObj(s.cards)) D.cards.forEach(function (c) { var n = Math.floor(clamp(s.cards[c.id], 0, 1e9)); if (n > 0) o.cards[c.id] = n; });
+    if (isObj(s.cards)) {
+      // known cards first (registered event cards included); unknown ids are kept so a module that failed to load loses nothing
+      for (var ck in s.cards) {
+        if (!Object.prototype.hasOwnProperty.call(s.cards, ck) || ck.charAt(0) === '_') continue;
+        var n = Math.floor(clamp(s.cards[ck], 0, 1e9));
+        if (n > 0) o.cards[ck] = n;
+      }
+    }
     o.chests = Math.floor(clamp(s.chests, 0, 1e9));
     o.legend = Math.floor(clamp(s.legend, 0, MAXN));
+    o.legendPts = Math.floor(clamp(s.legendPts, 0, MAXN));
     o.sleeps = Math.floor(clamp(s.sleeps, 0, 1e9));
+    o.myth = Math.floor(clamp(s.myth, 0, MAXN));
+    o.mythPts = Math.floor(clamp(s.mythPts, 0, MAXN));
+    o.myths = Math.floor(clamp(s.myths, 0, 1e9));
+    o.lore = jsonMap(s.lore);
+    o.relics = jsonMap(s.relics);
+    o.flags = jsonMap(s.flags);
+    o.auto = jsonMap(s.auto);
     o.gust = clamp(s.gust, 0, 1);
     if (Array.isArray(s.effects)) {
       s.effects.forEach(function (e) {
-        if (isObj(e) && (e.kind === 'frenzy' || e.kind === 'ember')) {
-          o.effects.push({ kind: e.kind, mult: clamp(e.mult, 1, 1e6), until: fin(e.until, 0) });
+        if (isObj(e) && typeof e.kind === 'string' && e.kind && o.effects.length < 50) {
+          o.effects.push({ kind: e.kind, mult: clamp(e.mult, 0, 1e6), until: fin(e.until, 0) });
         }
       });
     }
     if (isObj(s.stat)) {
-      ['swipePx', 'coins', 'treasures', 'gusts', 'sleepsGold'].forEach(function (k) { o.stat[k] = pos(s.stat[k]); });
+      ['swipePx', 'coins', 'treasures', 'gusts', 'sleepsGold', 'playActive', 'fastestSleep'].forEach(function (k) { o.stat[k] = pos(s.stat[k]); });
       o.stat.bestStreak = clamp(s.stat.bestStreak, 1, 1e6);
+      for (var sk in s.stat) if (Object.prototype.hasOwnProperty.call(s.stat, sk) && !Object.prototype.hasOwnProperty.call(o.stat, sk) && typeof s.stat[sk] === 'number') o.stat[sk] = pos(s.stat[sk]);
     }
     if (isObj(s.run)) {
-      ['coins', 'treasures', 'gusts', 'swipePx'].forEach(function (k) { o.run[k] = pos(s.run[k]); });
+      ['coins', 'treasures', 'gusts', 'swipePx', 'playActive'].forEach(function (k) { o.run[k] = pos(s.run[k]); });
       o.run.bestStreak = clamp(s.run.bestStreak, 1, 1e6);
+      for (var rk in s.run) if (Object.prototype.hasOwnProperty.call(s.run, rk) && !Object.prototype.hasOwnProperty.call(o.run, rk) && typeof s.run[rk] === 'number') o.run[rk] = pos(s.run[rk]);
     }
     o.time = pos(s.time);
     o.savedAt = fin(s.savedAt, 0) > 0 ? fin(s.savedAt, 0) : Date.now();
     if (isObj(s.settings)) {
+      var st0 = jsonMap(s.settings);
+      for (var sk2 in st0) if (!Object.prototype.hasOwnProperty.call(o.settings, sk2)) o.settings[sk2] = st0[sk2]; // module settings (sound volume ...)
       o.settings.haptics = s.settings.haptics !== false;
       o.settings.reducedMotion = s.settings.reducedMotion === true;
       var ba = s.settings.buyAmt;
       o.settings.buyAmt = (ba === 10 || ba === 'max') ? ba : 1;
     }
+    // module subtrees (addStateDefaults)
+    for (var d = 0; d < stateDefs.length; d++) {
+      var def = stateDefs[d];
+      if (CORE_MAPS.indexOf(def.name) >= 0) { o[def.name] = def.sanitize ? sanitizeSub(def, o[def.name]) : fillDefaults(defaultsOf(def), o[def.name]); continue; }
+      o[def.name] = sanitizeSub(def, s[def.name]);
+    }
+    // unknown top-level keys (a newer version, or a module that did not load this time) survive untouched
+    for (var uk in s) {
+      if (!Object.prototype.hasOwnProperty.call(s, uk) || uk.charAt(0) === '_' || Object.prototype.hasOwnProperty.call(o, uk)) continue;
+      var uv = jsonSafe(s[uk]);
+      if (uv !== undefined) o[uk] = uv;
+    }
+    o.v = VERSION;
     if (Array.isArray(s.missions)) {
       s.missions.forEach(function (m) {
         if (o.missions.length >= 3 || !isObj(m)) return;
@@ -151,26 +342,53 @@
     return o;
   }
 
+  function parseSave(json) {
+    var s = json;
+    if (typeof json === 'string') {
+      try { s = JSON.parse(json); } catch (e) { s = null; }
+    }
+    // tolerate a wrapper like { json: "...", savedAt }
+    if (isObj(s) && typeof s.json === 'string' && s.v === undefined) {
+      try { s = JSON.parse(s.json); } catch (e) { s = null; }
+    }
+    return isObj(s) ? s : null;
+  }
+  // version number of a raw save (string / object / cloud wrapper); 0 if it is not a save
+  function saveVersion(raw) {
+    try {
+      var s = parseSave(raw);
+      if (!s) return 0;
+      var v = Math.floor(fin(s.v, 1));
+      return v >= 1 ? v : 1;
+    } catch (e) { return 0; }
+  }
+
   function deserialize(json) {
     try {
-      var s = json;
-      if (typeof json === 'string') {
-        try { s = JSON.parse(json); } catch (e) { s = null; }
-      }
-      // tolerate a wrapper like { json: "...", savedAt }
-      if (isObj(s) && typeof s.json === 'string' && s.v === undefined) {
-        try { s = JSON.parse(s.json); } catch (e) { s = null; }
-      }
+      var raw = parseSave(json);
+      if (!raw) return newState();
+      var s = clone(raw); // never mutate the caller's object
       if (!isObj(s)) return newState();
-      return sanitize(s);
+      var from = Math.floor(fin(s.v, 1));
+      if (from < 1) from = 1;
+      var v = from;
+      while (v < VERSION && MIGRATIONS[v]) {
+        try { MIGRATIONS[v](s); } catch (e) { logErr('migrate v' + v, e); }
+        v++;
+      }
+      var o = sanitize(s);
+      if (from < VERSION) o._migratedFrom = from;
+      if (from > VERSION) o._futureVersion = from;
+      return o;
     } catch (e) {
+      logErr('deserialize', e);
       return newState();
     }
   }
 
   function serialize(state) {
     try {
-      if (isObj(state)) state.savedAt = Date.now();
+      if (isObj(state)) { state.savedAt = Date.now(); state.v = VERSION; }
       return JSON.stringify(state, function (k, v) {
         if (typeof k === 'string' && k.charAt(0) === '_') return undefined;
         if (typeof v === 'number' && !isFinite(v)) return 0;
@@ -190,15 +408,159 @@
     for (var i = 0; i < t.length; i++) if (copies >= t[i]) l = i + 1;
     return l;
   }
-  function cardLvl(state, target) {
-    var id = CARD_BY_TARGET[target];
-    if (!id) return 0;
-    return levelFor(cardCopies(state, id));
+  // v1 card effects, expressed as modifier contributions (keyed by the card's target)
+  function v1CardMod(target) {
+    if (typeof target !== 'string') return null;
+    if (target.indexOf('b:') === 0) {
+      var bid = target.slice(2);
+      return function (s, M, l) { M.buildingMult[bid] = (M.buildingMult[bid] || 1) * (1 + 0.5 * l); };
+    }
+    if (target === 't:0') return function (s, M, l) { M.tierCostMult[0] *= 1 - Math.min(0.4, 0.04 * l); };
+    if (target.indexOf('t:') === 0) {
+      var ti = tierIdx(target.slice(2));
+      if (ti < 1) return null;
+      return function (s, M, l) { M.tierMult[ti] *= 1 + 0.5 * l; };
+    }
+    switch (target) {
+      case 'coin': return function (s, M, l) { M.coinMult *= 1 + 0.25 * l; };
+      case 'stroke': return function (s, M, l) { M.strokeMult *= 1 + 0.5 * l; };
+      case 'gust': return function (s, M, l) { M.gustMult *= 1 + 0.25 * l; };
+      case 'treasure': return function (s, M, l) { M.treasureFreq *= 1 + 0.1 * l; };
+      case 'frenzy': return function (s, M, l) { M.frenzyDurAdd += 3 * l; };
+      case 'offline': return function (s, M, l) { M.offlineCapAddH += l; };
+      case 'streak': return function (s, M, l) { if (l >= 1) M.streakHigh = true; M.streakBonus *= 1 + 0.05 * l; };
+      case 'gps': return function (s, M, l) { M.gpsMult *= 1 + 0.25 * l; };
+      case 'legend': return function (s, M, l) { M.legendGainMult *= 1 + 0.1 * l; };
+    }
+    return null;
+  }
+  D.cards.forEach(function (c) { if (typeof c.mod !== 'function') { var f = v1CardMod(c.target); if (f) c.mod = f; } });
+
+  function registerCards(list) {
+    if (!Array.isArray(list)) list = [list];
+    var added = 0;
+    list.forEach(function (c) {
+      if (!isObj(c) || typeof c.id !== 'string' || !c.id) return;
+      if (!D.rarities[c.rarity]) c.rarity = 'epic';
+      if (typeof c.name !== 'string') c.name = c.id;
+      if (typeof c.describe !== 'function') { var txt = typeof c.text === 'string' ? c.text : ''; c.describe = function () { return txt; }; }
+      if (typeof c.mod !== 'function') { var f = v1CardMod(c.target); if (f) c.mod = f; }
+      if (CIDX.hasOwnProperty(c.id)) D.cards[CIDX[c.id]] = c; // re-registration (hot reload) replaces
+      else { D.cards.push(c); added++; }
+      rebuildIndexes();
+    });
+    dirty();
+    return added;
   }
 
-  // ================================================================ multipliers
+  // ================================================================ modifier pipeline
+  function freshM() {
+    return {
+      // ---- SPEC-V2 0.1 fields
+      gpsMult: 1,              // all building gold/s
+      buildingMult: {},        // id -> mult
+      tierMult: [1, 1, 1, 1, 1], // minion production per tier (index = producing tier)
+      coinMult: 1,             // coin worth (flat part AND gps part)
+      strokeMult: 1,
+      costMultBuilding: 1,     // gold cost of buildings (>= 0.05)
+      costMultTier: 1,         // gold cost of minions (>= 0.05)
+      legendGainMult: 1,
+      offlineCapAddH: 0,
+      offlineMult: 1,          // offline gold x
+      streakHigh: false,       // unlocks the x8 streak cap
+      streakRamp: 1,           // >1 = reach streak levels faster (divides the time thresholds)
+      treasureFreq: 1,         // >1 = more often
+      frenzyDurAdd: 0,         // seconds
+      gustCdMult: 1,           // <1 = faster recharge
+      gustMult: 1,             // gust coin worth x
+      chestCardsAdd: 0,
+      sweepMult: 1,            // broom crew coins/s x
+      // ---- foundation extras (documented in EXTENSIONS.md)
+      allMult: 1,              // gold/s AND coin worth AND minion production, applied once (how Legend works)
+      coinFlat: 1,             // flat coin value (Sharper Claws multiply it)
+      coinGpsPct: 0,           // extra share of gold/s per coin, added to the base 0.5% (Golden Scales)
+      spillMult: 1,            // coin spill rate x
+      sweepRate: 0,            // base broom coins/s (Broom Crew sets the max)
+      gustCd: C.gustCooldown,  // base gust cooldown seconds (Bigger Wings set the min)
+      streakBonus: 1,          // streak multiplier value x (Comet Shard)
+      tierCostMult: [1, 1, 1, 1, 1], // per-tier minion gold cost x (Ember Egg)
+      frenzyMult: 1            // Gold Frenzy strength x
+    };
+  }
+  function mClamp(x, a, b, d) { x = +x; if (!isFinite(x)) return d; return x < a ? a : (x > b ? b : x); }
+  function sanitizeM(M) {
+    var K1 = ['gpsMult', 'coinMult', 'strokeMult', 'legendGainMult', 'offlineMult', 'gustMult', 'sweepMult', 'allMult', 'coinFlat', 'spillMult', 'streakBonus', 'frenzyMult'];
+    for (var i = 0; i < K1.length; i++) M[K1[i]] = mClamp(M[K1[i]], 0, MAXN, 1);
+    M.costMultBuilding = mClamp(M.costMultBuilding, 0.05, MAXN, 1);
+    M.costMultTier = mClamp(M.costMultTier, 0.05, MAXN, 1);
+    M.offlineCapAddH = mClamp(M.offlineCapAddH, 0, 1e6, 0);
+    M.streakHigh = !!M.streakHigh;
+    M.streakRamp = mClamp(M.streakRamp, 0.1, 100, 1);
+    M.treasureFreq = mClamp(M.treasureFreq, 0.01, 1000, 1);
+    M.frenzyDurAdd = mClamp(M.frenzyDurAdd, 0, 1e6, 0);
+    M.gustCdMult = mClamp(M.gustCdMult, 0.02, 100, 1);
+    M.chestCardsAdd = Math.floor(mClamp(M.chestCardsAdd, 0, 100, 0));
+    M.coinGpsPct = mClamp(M.coinGpsPct, 0, 1e6, 0);
+    M.sweepRate = mClamp(M.sweepRate, 0, 1e6, 0);
+    M.gustCd = mClamp(M.gustCd, 1, 1e6, C.gustCooldown);
+    if (!isObj(M.buildingMult)) M.buildingMult = {};
+    for (var k in M.buildingMult) if (Object.prototype.hasOwnProperty.call(M.buildingMult, k)) M.buildingMult[k] = mClamp(M.buildingMult[k], 0, MAXN, 1);
+    ['tierMult', 'tierCostMult'].forEach(function (f) {
+      var a = Array.isArray(M[f]) ? M[f] : [];
+      var o = [];
+      for (var j = 0; j < 5; j++) o.push(f === 'tierCostMult' ? mClamp(a[j], 0.05, MAXN, 1) : mClamp(a[j], 0, MAXN, 1));
+      M[f] = o;
+    });
+    return M;
+  }
+  function runMods(state) {
+    var M = freshM();
+    for (var i = 0; i < modSources.length; i++) guarded('mod', modSources[i], [state, M]);
+    return sanitizeM(M);
+  }
+  function modBreakdown(state) {
+    var out = [];
+    if (!ok(state)) return out;
+    for (var i = 0; i < modSources.length; i++) {
+      var M = freshM();
+      try { modSources[i].fn(state, M); } catch (e) { /* shown as neutral */ }
+      out.push({ name: modSources[i].name, M: sanitizeM(M) });
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- v1 bonuses as mod sources
   function legendMult(state) { return 1 + C.legendPer * pos(state.legend); }
   function rankMult(state) { return 1 + C.rankGpsPer * Math.max(0, fin(state.rank, 1) - C.rankGpsAfter); }
+  addModSource('legend', function (s, M) { M.allMult *= legendMult(s); });
+  addModSource('rank', function (s, M) {
+    M.gpsMult *= rankMult(s);
+    if (fin(s.rank, 1) >= C.streakHighRank) M.streakHigh = true;
+  });
+  addModSource('upgrades', function (s, M) {
+    var ups = isObj(s.upgrades) ? s.upgrades : {};
+    for (var i = 0; i < D.upgrades.length; i++) {
+      var u = D.upgrades[i];
+      if (ups[u.id] !== true) continue;
+      var e = u.effect;
+      if (e.kind === 'coinMult') M.coinFlat *= e.mult;
+      else if (e.kind === 'scales') M.coinGpsPct += e.pct;
+      else if (e.kind === 'sweep') M.sweepRate = Math.max(M.sweepRate, e.rate);
+      else if (e.kind === 'gustCd') M.gustCd = Math.min(M.gustCd, e.sec);
+      else if (e.kind === 'gleam') M.treasureFreq *= e.mult;
+      else if (e.kind === 'spill') M.spillMult *= e.mult;
+    }
+  });
+  addModSource('cards', function (s, M) {
+    for (var i = 0; i < D.cards.length; i++) {
+      var c = D.cards[i];
+      if (typeof c.mod !== 'function') continue;
+      var l = levelFor(cardCopies(s, c.id));
+      if (l > 0) c.mod(s, M, l);
+    }
+  });
+
+  // ================================================================ multipliers
   function milestoneCountBuilding(owned) {
     var n = 0, m = D.buildingMilestones;
     for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
@@ -226,23 +588,6 @@
   }
   function pow2(n) { return n > 900 ? MAXN : Math.pow(2, n); }
 
-  function upgradeAgg(state) {
-    var a = { coinMult: 1, scales: 0, sweep: 0, gustCd: C.gustCooldown, gleam: 1, spill: 1 };
-    var ups = isObj(state.upgrades) ? state.upgrades : {};
-    for (var i = 0; i < D.upgrades.length; i++) {
-      var u = D.upgrades[i];
-      if (ups[u.id] !== true) continue;
-      var e = u.effect;
-      if (e.kind === 'coinMult') a.coinMult *= e.mult;
-      else if (e.kind === 'scales') a.scales += e.pct;
-      else if (e.kind === 'sweep') a.sweep = Math.max(a.sweep, e.rate);
-      else if (e.kind === 'gustCd') a.gustCd = Math.min(a.gustCd, e.sec);
-      else if (e.kind === 'gleam') a.gleam *= e.mult;
-      else if (e.kind === 'spill') a.spill *= e.mult;
-    }
-    return a;
-  }
-
   function effectMult(state, kind) {
     var m = 1, t = fin(state.time, 0);
     if (!Array.isArray(state.effects) || state._noEffects) return 1;
@@ -262,99 +607,106 @@
     return left;
   }
 
-  // per-unit production multiplier of tier i (i>=1)
-  function tierUnitRate(state, i) {
+  // per-unit production of tier i (i>=1)
+  function tierUnitRate(state, i, M) {
     var td = D.tiers[i];
     if (!td || !td.prod) return 0;
     var owned = Math.floor(pos(state.tiers[i]));
-    var m = td.prod * pow2(milestoneCountTier(owned)) * legendMult(state);
-    if (i >= 1) m *= 1 + 0.5 * cardLvl(state, 't:' + i);
-    return cl(m);
+    return cl(td.prod * pow2(milestoneCountTier(owned)) * M.allMult * M.tierMult[i]);
   }
-
-  // building gps without frenzy (the "base" gold/s that drives coin worth & missions)
-  function buildingGpsEach(state, id) {
+  // building gps each, before global multipliers and frenzy
+  function buildingGpsEach(state, id, M) {
     var b = bdef(id);
     if (!b) return 0;
     var owned = Math.floor(pos(state.buildings[id]));
-    return cl(b.gps * pow2(milestoneCountBuilding(owned)) * (1 + 0.5 * cardLvl(state, 'b:' + id)));
-  }
-  function globalGpsMult(state) {
-    return legendMult(state) * rankMult(state) * (1 + 0.25 * cardLvl(state, 'gps'));
-  }
-  function baseGps(state) {
-    var g = 0, gm = globalGpsMult(state);
-    for (var i = 0; i < D.buildings.length; i++) {
-      var id = D.buildings[i].id;
-      g += buildingGpsEach(state, id) * Math.floor(pos(state.buildings[id]));
-    }
-    return cl(g * gm);
+    var bm = M.buildingMult[id];
+    return cl(b.gps * pow2(milestoneCountBuilding(owned)) * (bm === undefined ? 1 : bm));
   }
 
-  function maxStreak(state) {
-    return (cardLvl(state, 'streak') >= 1 || fin(state.rank, 1) >= C.streakHighRank) ? C.streakCapHigh : C.streakCapLow;
-  }
+  function mods(state) { return stats(state).M; }
+  function maxStreak(state) { return stats(state).maxStreak; }
   function streakEff(state, mult) {
+    var st = stats(state);
     mult = clamp(mult, 1, 1e6);
-    var cap = maxStreak(state);
+    var cap = st.maxStreak;
     if (mult > cap) mult = cap;
-    return mult * (1 + 0.05 * cardLvl(state, 'streak'));
+    return mult * st.M.streakBonus;
   }
 
-  function coinWorthOf(state, gps, agg) {
-    // gps already carries legendMult; divide it out so Legend applies once, and claws only scale the flat part
-    var w = (agg.coinMult + (C.coinGpsPct + agg.scales) * gps / legendMult(state)) * (1 + 0.25 * cardLvl(state, 'coin')) *
-      effectMult(state, 'ember') * legendMult(state);
-    return cl(w);
-  }
-
-  function stats(state) {
-    if (!ok(state)) state = baseState();
-    var agg = upgradeAgg(state);
-    var bg = baseGps(state);
+  function computeStats(state) {
+    ensureDefaults(state);
+    var M = runMods(state);
+    var gm = M.allMult * M.gpsMult;
     var frenzy = effectMult(state, 'frenzy');
-    var gm = globalGpsMult(state);
-    var gps = cl(bg * frenzy);
-    var coinWorth = coinWorthOf(state, bg, agg);
-    var strokeWorth = cl(C.strokeFrac * coinWorth * (1 + 0.5 * cardLvl(state, 'stroke')));
-    var sweepRate = agg.sweep;
-    var buildingGps = {}, buildingEach = {};
+    var buildingGps = {}, buildingEach = {}, g = 0;
+    var eachRaw = {};
     for (var i = 0; i < D.buildings.length; i++) {
       var id = D.buildings[i].id;
-      var each = cl(buildingGpsEach(state, id) * gm * frenzy);
-      buildingEach[id] = each;
-      buildingGps[id] = cl(each * Math.floor(pos(state.buildings[id])));
+      var e0 = buildingGpsEach(state, id, M);
+      eachRaw[id] = e0;
+      g += e0 * Math.floor(pos(state.buildings[id]));
     }
+    var bg = cl(g * gm);
+    for (i = 0; i < D.buildings.length; i++) {
+      var id2 = D.buildings[i].id;
+      var each = cl(eachRaw[id2] * gm * frenzy);
+      buildingEach[id2] = each;
+      buildingGps[id2] = cl(each * Math.floor(pos(state.buildings[id2])));
+    }
+    var gps = cl(bg * frenzy);
+    // the gps part already carries allMult; divide it out so allMult (Legend, ...) applies to coins once
+    var gpsPart = M.allMult > 0 ? (C.coinGpsPct + M.coinGpsPct) * bg / M.allMult : 0;
+    var coinWorth = cl((M.coinFlat + gpsPart) * M.coinMult * effectMult(state, 'ember') * M.allMult);
+    var strokeWorth = cl(C.strokeFrac * coinWorth * M.strokeMult);
+    var spillRate = C.spillBase * M.spillMult;
+    var sweepRate = M.sweepRate * M.sweepMult;
     var tierRates = [0, 0, 0, 0, 0], unit = [0, 0, 0, 0, 0];
     for (var t = 1; t < 5; t++) {
-      unit[t] = tierUnitRate(state, t);
+      unit[t] = tierUnitRate(state, t, M);
       tierRates[t - 1] = cl(unit[t] * pos(state.tiers[t]));
     }
-    var tf = agg.gleam * (1 + 0.1 * cardLvl(state, 'treasure'));
+    var tf = M.treasureFreq;
     var fL = effectLeft(state, 'frenzy'), eL = effectLeft(state, 'ember');
     return {
       gps: gps,
       baseGps: bg,
       coinWorth: coinWorth,
       strokeWorth: strokeWorth,
-      spillRate: C.spillBase * agg.spill,
+      spillRate: spillRate,
       sweepRate: sweepRate,
-      sweepGps: cl(Math.min(sweepRate, C.spillBase * agg.spill) * coinWorth),
-      gustCooldown: agg.gustCd,
-      gustWorthMult: C.gustMult * (1 + 0.25 * cardLvl(state, 'gust')),
+      sweepGps: cl(Math.min(sweepRate, spillRate) * coinWorth),
+      gustCooldown: M.gustCd * M.gustCdMult,
+      gustWorthMult: C.gustMult * M.gustMult,
       treasureInterval: [C.treasureInterval[0] / tf, C.treasureInterval[1] / tf],
       tierRates: tierRates,
       tierUnitRate: unit,
       buildingGps: buildingGps,
       buildingEach: buildingEach,
-      maxStreak: maxStreak(state),
-      offlineCapHours: C.offlineCapHours + cardLvl(state, 'offline'),
+      maxStreak: M.streakHigh ? C.streakCapHigh : C.streakCapLow,
+      streakRamp: M.streakRamp,
+      streakBonus: M.streakBonus,
+      offlineCapHours: C.offlineCapHours + M.offlineCapAddH,
+      offlineMult: M.offlineMult,
       legendMult: legendMult(state),
       frenzyActive: fL > 0 && !state._noEffects,
       emberActive: eL > 0 && !state._noEffects,
       frenzyLeft: Math.max(0, fL),
-      emberLeft: Math.max(0, eL)
+      emberLeft: Math.max(0, eL),
+      M: M
     };
+  }
+
+  // cached per (state object, state.time, global dirty epoch); treat the result as read-only
+  function stats(state) {
+    if (!ok(state)) state = baseState();
+    var ne = !!state._noEffects;
+    var c = cache ? cache.get(state) : state._statsCache;
+    if (c && c.t === state.time && c.e === epoch && c.ne === ne) return c.st;
+    var st = computeStats(state);
+    var rec = { t: state.time, e: epoch, ne: ne, st: st };
+    if (cache) cache.set(state, rec);
+    else { try { Object.defineProperty(state, '_statsCache', { value: rec, writable: true, configurable: true, enumerable: false }); } catch (e) { /* ignore */ } }
+    return st;
   }
 
   // ================================================================ earning
@@ -378,7 +730,9 @@
     var g = cl(n * s.coinWorth * streakEff(state, streakMult) * valueMult);
     state.stat.coins = cl(pos(state.stat.coins) + n);
     state.run.coins = cl(pos(state.run.coins) + n);
-    return earn(state, g, 'coin');
+    var got = earn(state, g, 'coin');
+    emit('coin', n);
+    return got;
   }
 
   function strokeCollected(state, px, streakMult) {
@@ -414,21 +768,25 @@
     state.gust = 0;
     state.stat.gusts = pos(state.stat.gusts) + 1;
     state.run.gusts = pos(state.run.gusts) + 1;
+    emit('gust');
     return true;
   }
 
   // ================================================================ treasures
   function addEffect(state, kind, mult, dur) {
+    if (!ok(state) || typeof kind !== 'string') return;
+    if (!Array.isArray(state.effects)) state.effects = [];
     var t = fin(state.time, 0);
-    var until = t + dur;
+    var until = t + pos(dur);
     var keep = [];
     for (var i = 0; i < state.effects.length; i++) {
       var e = state.effects[i];
       if (e.kind === kind) until = Math.max(until, fin(e.until, 0));
       else keep.push(e);
     }
-    keep.push({ kind: kind, mult: mult, until: until });
+    keep.push({ kind: kind, mult: clamp(mult, 0, 1e6), until: until });
     state.effects = keep;
+    dirty();
   }
 
   function grabTreasure(state) {
@@ -440,9 +798,10 @@
     var s = stats(state);
     var res = { kind: pick.kind, title: pick.title, text: pick.text };
     if (pick.kind === 'frenzy') {
-      var dur = C.frenzyDur + 3 * cardLvl(state, 'frenzy');
-      addEffect(state, 'frenzy', C.frenzyMult, dur);
-      res.text = 'Gold/s x' + C.frenzyMult + ' for ' + dur + 's!';
+      var dur = C.frenzyDur + s.M.frenzyDurAdd;
+      var fm = C.frenzyMult * s.M.frenzyMult;
+      addEffect(state, 'frenzy', fm, dur);
+      res.text = 'Gold/s x' + (Math.round(fm * 100) / 100) + ' for ' + dur + 's!';
     } else if (pick.kind === 'lucky') {
       var amt = Math.min(0.15 * pos(state.gold) + 13, 900 * s.baseGps);
       amt = Math.max(amt, 50 * s.coinWorth);
@@ -464,6 +823,7 @@
         state.tiers[i] = cl(pos(state.tiers[i]) + add);
         gained[i] = add;
       }
+      dirty();
       res.minions = gained;
       res.text = '+' + HOARD.fmt(gained[0]) + ' Eggs' + (gained[1] > 0 ? ' and more of your brood' : '') + '!';
     }
@@ -508,6 +868,8 @@
     var g = C.buildingGrowth;
     return cl(base * Math.pow(g, owned) * (Math.pow(g, n) - 1) / (g - 1));
   }
+  // base gold price of a building's first unit with M.costMultBuilding applied
+  function bGold(state, b) { return b.gold * stats(state).M.costMultBuilding; }
 
   function buildingCost(state, id, n) {
     var b = bdef(id);
@@ -516,7 +878,7 @@
     n = normN(n, function () { return buildingMax(state, id); });
     n = Math.min(n, C.buildingMaxBuy);
     return {
-      gold: goldSum(b.gold, owned, n),
+      gold: goldSum(bGold(state, b), owned, n),
       minionTier: b.minionTier,
       minions: b.minionTier >= 0 ? minionSum(b.minions, owned, n) : 0,
       n: n
@@ -524,7 +886,7 @@
   }
 
   function canPayBuilding(state, b, owned, n) {
-    if (goldSum(b.gold, owned, n) > pos(state.gold) * (1 + 1e-12)) return false;
+    if (goldSum(bGold(state, b), owned, n) > pos(state.gold) * (1 + 1e-12)) return false;
     if (b.minionTier >= 0 && minionSum(b.minions, owned, n) > pos(state.tiers[b.minionTier]) + 1e-9) return false;
     return true;
   }
@@ -534,7 +896,7 @@
     if (!b || !ok(state)) return 0;
     var owned = Math.floor(pos(state.buildings[id]));
     var g = C.buildingGrowth, gold = pos(state.gold);
-    var p0 = b.gold * Math.pow(g, owned);
+    var p0 = bGold(state, b) * Math.pow(g, owned);
     if (!(p0 > 0) || gold < p0) return 0;
     var n = Math.floor(Math.log(1 + gold * (g - 1) / p0) / Math.log(g));
     if (b.minionTier >= 0) {
@@ -557,18 +919,19 @@
     n = Math.min(C.buildingMaxBuy, Math.max(1, Math.floor(fin(n, 1))));
     if (!canPayBuilding(state, b, owned, n)) return false;
     var before = milestoneCountBuilding(owned);
-    state.gold = pos(state.gold - goldSum(b.gold, owned, n));
+    state.gold = pos(state.gold - goldSum(bGold(state, b), owned, n));
     if (b.minionTier >= 0) state.tiers[b.minionTier] = pos(state.tiers[b.minionTier] - minionSum(b.minions, owned, n));
     state.buildings[id] = owned + n;
+    dirty();
     if (milestoneCountBuilding(owned + n) > before) emit('milestone', { kind: 'building', id: id, count: owned + n });
+    emit('buy', { kind: 'building', id: id, n: n });
     return true;
   }
 
   // ================================================================ minions
   function tierGoldPrice(state, i) {
-    var p = D.tiers[i].gold;
-    if (i === 0) p *= 1 - Math.min(0.4, 0.04 * cardLvl(state, 't:0'));
-    return p;
+    var M = stats(state).M;
+    return D.tiers[i].gold * M.tierCostMult[i] * M.costMultTier;
   }
   function tierCost(state, i, n) {
     i = tierIdx(i);
@@ -602,8 +965,10 @@
     state.gold = pos(state.gold - g);
     if (i > 0) state.tiers[i - 1] = pos(state.tiers[i - 1] - p);
     state.tiers[i] = cl(pos(state.tiers[i]) + n);
+    dirty();
     var cnt = Math.floor(state.tiers[i]);
     if (milestoneCountTier(cnt) > before) emit('milestone', { kind: 'tier', id: i, count: cnt });
+    emit('buy', { kind: 'tier', id: i, n: n });
     return true;
   }
 
@@ -617,7 +982,7 @@
   }
   function upgradeList(state) {
     if (!ok(state)) return [];
-    var gold = pos(state.gold), bg = baseGps(state);
+    var gold = pos(state.gold), bg = stats(state).baseGps;
     var out = [], cheapest = null;
     for (var i = 0; i < D.upgrades.length; i++) {
       var u = D.upgrades[i];
@@ -638,6 +1003,8 @@
     if (pos(state.gold) < u.cost) return false;
     state.gold = pos(state.gold - u.cost);
     state.upgrades[id] = true;
+    dirty();
+    emit('buy', { kind: 'upgrade', id: id, n: 1 });
     return true;
   }
 
@@ -738,7 +1105,7 @@
     switch (m.tpl) {
       case 'building': {
         // favour the newest buildings
-        var bl = unlockedB.filter(function (b) { return !active['building:' + b.id] && goldSum(b.gold, Math.floor(pos(state.buildings[b.id])), 1) <= rate * T * 1.5; });
+        var bl = unlockedB.filter(function (b) { return !active['building:' + b.id] && goldSum(bGold(state, b), Math.floor(pos(state.buildings[b.id])), 1) <= rate * T * 1.5; });
         if (!bl.length) bl = unlockedB.slice(0, 1);
         var wsum = 0, ws = bl.map(function (b, k) { var w = k + 1; wsum += w; return w; });
         var y = h2 * wsum, bi = bl.length - 1;
@@ -746,7 +1113,7 @@
         var b = bl[bi];
         var own = Math.floor(pos(state.buildings[b.id]));
         var budget = rate * T * C.missionBuildShare, step = 1;
-        while (step < C.missionBuildMaxStep && goldSum(b.gold, own, step + 1) <= budget) step++;
+        while (step < C.missionBuildMaxStep && goldSum(bGold(state, b), own, step + 1) <= budget) step++;
         var tgt = own + step;
         if (tgt >= 20) tgt = Math.ceil(tgt / 5) * 5;
         m.key = b.id; m.target = tgt;
@@ -835,6 +1202,7 @@
       rankUp = true;
     }
     if (state.rank >= C.maxRank) state.rankProgress = Math.min(state.rankProgress, rankNeed(state));
+    dirty();
     // replace (after rank-up so the new mission scales with the new rank)
     state.missions.splice(idx, 1);
     var nm = genMission(state);
@@ -849,26 +1217,45 @@
   }
 
   // ================================================================ cards
-  function rollCard() {
+  // rolls one card id by rarity weight. Cards with `chest: false` (event cards) never drop from normal chests.
+  // filter(cardDef) -> bool narrows the pool further (optional).
+  function rollCard(filter) {
     var total = 0, k;
     for (k = 0; k < D.rarityOrder.length; k++) total += D.rarities[D.rarityOrder[k]].weight;
     var r = Math.random() * total, rar = D.rarityOrder[0];
     for (k = 0; k < D.rarityOrder.length; k++) { r -= D.rarities[D.rarityOrder[k]].weight; if (r < 0) { rar = D.rarityOrder[k]; break; } }
-    var pool = D.cards.filter(function (c) { return c.rarity === rar; });
-    if (!pool.length) pool = D.cards;
+    var base = D.cards.filter(function (c) {
+      if (typeof filter === 'function') { try { return !!filter(c); } catch (e) { return false; } }
+      return c.chest !== false;
+    });
+    if (!base.length) return null;
+    var pool = base.filter(function (c) { return c.rarity === rar; });
+    if (!pool.length) pool = base;
     return pool[Math.min(pool.length - 1, Math.floor(Math.random() * pool.length))].id;
+  }
+  function grantCard(state, id, n) {
+    if (!ok(state) || !cdef(id)) return false;
+    n = Math.floor(fin(n, 1));
+    if (n < 1) return false;
+    if (!isObj(state.cards)) state.cards = {};
+    state.cards[id] = Math.floor(pos(state.cards[id])) + n;
+    dirty();
+    emit('card', { id: id, n: n });
+    return true;
   }
   function openChest(state) {
     if (!ok(state) || Math.floor(pos(state.chests)) < 1) return [];
     state.chests = Math.floor(pos(state.chests)) - 1;
-    var n = fin(state.rank, 1) >= C.chestCardsRank ? C.chestCardsHigh : C.chestCardsLow;
+    var n = (fin(state.rank, 1) >= C.chestCardsRank ? C.chestCardsHigh : C.chestCardsLow) + stats(state).M.chestCardsAdd;
     var out = [];
     if (!isObj(state.cards)) state.cards = {};
     for (var i = 0; i < n; i++) {
       var id = rollCard();
+      if (!id) break;
       state.cards[id] = Math.floor(pos(state.cards[id])) + 1;
       out.push(id);
     }
+    dirty();
     emit('chest', out);
     return out;
   }
@@ -880,20 +1267,23 @@
     var nextAt = level < D.cardThresholds.length ? D.cardThresholds[level] : null;
     var text = '';
     try { text = c.describe(level); } catch (e) { text = ''; }
-    return { id: c.id, name: c.name, rarity: c.rarity, copies: copies, level: level, nextAt: nextAt, text: text, flavor: c.flavor || '', target: c.target };
+    return { id: c.id, name: c.name, rarity: c.rarity, copies: copies, level: level, nextAt: nextAt, text: text, flavor: c.flavor || '', target: c.target, group: c.group || '' };
   }
 
   // ================================================================ prestige
   function legendOnSleep(state) {
     if (!ok(state)) return 0;
-    var g = Math.floor(Math.sqrt(pos(state.earnedRun) / C.legendDiv) * (1 + 0.1 * cardLvl(state, 'legend')));
+    var g = Math.floor(Math.sqrt(pos(state.earnedRun) / C.legendDiv) * stats(state).M.legendGainMult);
     return Math.max(0, fin(g, 0));
   }
   function canSleep(state) { return ok(state) && pos(state.earnedRun) >= C.sleepReq; }
-  function sleep(state) {
-    if (!canSleep(state)) return 0;
-    var gained = legendOnSleep(state);
-    state.stat.sleepsGold = cl(pos(state.stat.sleepsGold) + pos(state.earnedRun));
+
+  // resets everything a Long Sleep resets, then runs the sleep hooks and refills missions.
+  // between(state, snapshot) runs after the reset and before the hooks (sleep adds Legend there).
+  // Returns the pre-reset snapshot (JSON copy). Used by sleep() and by the Myth "Ascend".
+  function resetRun(state, reason, between) {
+    if (!ok(state)) return null;
+    var snap = clone(state);
     state.gold = 0;
     state.earnedRun = 0;
     state.tiers = [0, 0, 0, 0, 0];
@@ -904,13 +1294,49 @@
     state.effects = [];
     state.run = freshRun();
     state.gust = 1;
-    state.legend = cl(pos(state.legend) + gained);
-    state.sleeps = Math.floor(pos(state.sleeps)) + 1;
-    state.chests = Math.floor(pos(state.chests)) + 1;
     state.missions = [];
+    dirty();
+    if (typeof between === 'function') { try { between(state, snap); } catch (e) { logErr('resetRun', e); } }
+    reason = reason || 'sleep';
+    for (var i = 0; i < sleepHooks.length; i++) { guarded('sleep', sleepHooks[i], [state, snap, reason]); dirty(); }
+    state.missions = [];
+    dirty();
     fillMissions(state);
+    return snap;
+  }
+  function sleep(state) {
+    if (!canSleep(state)) return 0;
+    var gained = legendOnSleep(state);
+    state.stat.sleepsGold = cl(pos(state.stat.sleepsGold) + pos(state.earnedRun));
+    var ra = pos(state.run && state.run.playActive);
+    if (ra > 0 && (!(pos(state.stat.fastestSleep) > 0) || ra < state.stat.fastestSleep)) state.stat.fastestSleep = ra;
+    resetRun(state, 'sleep', function (s) {
+      s.legend = cl(pos(s.legend) + gained);
+      s.legendPts = cl(pos(s.legendPts) + gained);
+      s.sleeps = Math.floor(pos(s.sleeps)) + 1;
+      s.chests = Math.floor(pos(s.chests)) + 1;
+    });
     emit('sleep', gained);
     return gained;
+  }
+
+  // ================================================================ small shared helpers for feature modules
+  function flag(state, key) { return (state && isObj(state.flags)) ? state.flags[key] : undefined; }
+  function setFlag(state, key, v) {
+    if (!ok(state) || typeof key !== 'string') return;
+    if (!isObj(state.flags)) state.flags = {};
+    if (v === undefined || v === null) delete state.flags[key];
+    else { var j = jsonSafe(v); if (j !== undefined) state.flags[key] = j; }
+    dirty();
+  }
+  // spend a numeric currency field (e.g. 'legendPts', 'mythPts', 'gold'): false if short
+  function spend(state, field, amount) {
+    if (!ok(state) || typeof field !== 'string') return false;
+    amount = pos(amount);
+    if (!(pos(state[field]) + 1e-9 >= amount)) return false;
+    state[field] = pos(pos(state[field]) - amount);
+    dirty();
+    return true;
   }
 
   // ================================================================ simulation
@@ -918,10 +1344,11 @@
   // x_j(t) = sum_{k>=j} x_k * prod_{m=j+1..k} a_m * t^(k-j)/(k-j)!
   function advanceTiers(state, dt) {
     var a = [0, 0, 0, 0, 0], x = [0, 0, 0, 0, 0], i, j, k;
+    var M = stats(state).M;
     for (i = 0; i < 5; i++) {
       x[i] = pos(state.tiers[i]);
       // a locked tier still produces if owned (e.g. after a load); fine
-      if (i >= 1) a[i] = tierUnitRate(state, i);
+      if (i >= 1) a[i] = tierUnitRate(state, i, M);
     }
     var gained = [0, 0, 0, 0, 0];
     for (j = 0; j < 4; j++) {
@@ -951,17 +1378,25 @@
       g += st.sweepGps * dt;
       state.run.coins = cl(pos(state.run.coins) + Math.min(st.sweepRate, st.spillRate) * dt);
     }
+    if (offline) g *= st.M.offlineMult;
     var earned = earn(state, g, offline ? 'offline' : 'idle');
     var mins = advanceTiers(state, dt);
+    dirty(); // tier counts moved (offline sub-steps do not advance state.time)
     var cd = st.gustCooldown > 0 ? st.gustCooldown : C.gustCooldown;
     state.gust = clamp(fin(state.gust, 0) + dt / cd, 0, 1);
     return { gold: earned, minions: mins };
   }
 
+  function runTickHooks(state, dt, isOffline) {
+    for (var i = 0; i < tickHooks.length; i++) guarded('tick', tickHooks[i], [state, dt, !!isOffline]);
+  }
+
   function pruneEffects(state) {
     if (!Array.isArray(state.effects)) { state.effects = []; return; }
     var t = fin(state.time, 0);
+    var n = state.effects.length;
     state.effects = state.effects.filter(function (e) { return isObj(e) && fin(e.until, 0) > t; });
+    if (state.effects.length !== n) dirty();
   }
 
   function tick(state, dt) {
@@ -975,13 +1410,18 @@
       if (!isObj(state.upgrades)) state.upgrades = {};
       for (var i = 0; i < 5; i++) state.tiers[i] = pos(state.tiers[i]);
       state.gold = pos(state.gold);
+      ensureDefaults(state);
+      dirty(); // callers (tests, UI, other modules) may have edited state directly since the last frame
       step(state, dt, false);
       state.time = cl(pos(state.time) + dt);
+      state.stat.playActive = cl(pos(state.stat.playActive) + dt);
+      state.run.playActive = cl(pos(state.run.playActive) + dt);
       pruneEffects(state);
+      if (tickHooks.length) runTickHooks(state, dt, false);
       if (!Array.isArray(state.missions) || state.missions.length !== 3) fillMissions(state);
       updateMissions(state, stats(state));
     } catch (e) {
-      try { console.error('[HOARD] tick', e); } catch (e2) { /* ignore */ }
+      logErr('tick', e);
     }
   }
 
@@ -989,6 +1429,8 @@
     var res = { seconds: 0, gold: 0, minions: [0, 0, 0, 0, 0] };
     if (!ok(state)) return res;
     try {
+      ensureDefaults(state);
+      dirty();
       var cap = stats(state).offlineCapHours * 3600;
       seconds = clamp(seconds, 0, cap);
       res.seconds = seconds;
@@ -998,24 +1440,28 @@
       var dt = seconds / steps;
       quiet++;
       state._noEffects = true;
+      dirty();
       try {
         for (var i = 0; i < steps; i++) {
           var r = step(state, dt, true);
           res.gold = cl(res.gold + r.gold);
           for (var j = 0; j < 5; j++) res.minions[j] = cl(res.minions[j] + r.minions[j]);
+          if (tickHooks.length) runTickHooks(state, dt, true);
         }
       } finally {
         delete state._noEffects;
+        dirty();
         quiet--;
       }
       updateMissions(state, stats(state));
     } catch (e) {
-      try { console.error('[HOARD] offline', e); } catch (e2) { /* ignore */ }
+      logErr('offline', e);
     }
     return res;
   }
 
   HOARD.engine = {
+    // ---- v1 contract (SPEC.md)
     newState: newState,
     deserialize: deserialize,
     serialize: serialize,
@@ -1050,8 +1496,33 @@
     offline: offline,
     on: on,
     emit: emit,
-    // extras (not in the contract, safe to ignore)
+    // v1 extras
     cardLevel: function (state, id) { return levelFor(cardCopies(state, id)); },
-    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); }
+    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); },
+    // ---- v2 extension points (EXTENSIONS.md)
+    version: VERSION,
+    addModSource: addModSource,
+    addTickHook: addTickHook,
+    addSleepHook: addSleepHook,
+    addStateDefaults: addStateDefaults,
+    registerCards: registerCards,
+    flag: flag,
+    setFlag: setFlag,
+    off: off,
+    dirty: function () { dirty(); },
+    mods: mods,
+    modBreakdown: modBreakdown,
+    freshMods: freshM,
+    resetRun: resetRun,
+    addEffect: addEffect,
+    effectLeft: function (state, kind) { return ok(state) ? Math.max(0, effectLeft(state, kind)) : 0; },
+    grantCard: grantCard,
+    rollCard: rollCard,
+    spend: spend,
+    levelFor: levelFor,
+    saveVersion: saveVersion,
+    migrations: MIGRATIONS,
+    isQuiet: function () { return quiet > 0; },
+    util: { fin: fin, cl: cl, pos: pos, clamp: clamp, isObj: isObj, hash32: hash32, clone: clone, jsonSafe: jsonSafe, pow2: pow2, MAXN: MAXN }
   };
 })();

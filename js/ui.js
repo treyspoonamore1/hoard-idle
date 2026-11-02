@@ -1,14 +1,20 @@
 /* Hoard — ui.js
- * HOARD.ui: top bar, tabs (Lair, Brood, Quests, Hoard, Sleep + settings), lists,
- * hold-to-buy, modals/sheets, toasts. Reads state; mutates it only through
- * HOARD.engine.* (plus state.settings, which is a UI preference).
+ * HOARD.ui: top bar, registered tabs/sections (Lair, Brood, Quests, Hoard, Legend + feature
+ * modules), the Settings sheet, top-bar chips, lists, hold-to-buy, sheets, toasts.
+ * Reads state; mutates it only through HOARD.engine.* (plus state.settings, a UI preference).
+ * Extension API (addTab/addSection/addSetting/addChip/addRowExtra/sheet/ask/css/icons): EXTENSIONS.md.
  */
 (function () {
   'use strict';
   var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
   var ui = (HOARD.ui = HOARD.ui || {});
   if (typeof document === 'undefined') {
-    ui.init = ui.frame = ui.welcome = ui.toast = ui.refresh = function () {};
+    // Node / headless: the whole API exists as harmless no-ops so feature modules can load anywhere
+    var noop = function () { return false; };
+    ['init', 'frame', 'welcome', 'toast', 'refresh', 'markDirty', 'addTab', 'addSection', 'removeSection', 'addSetting', 'addChip',
+      'addRowExtra', 'sheet', 'closeSheet', 'css', 'setTab', 'openSettings', 'copyText'].forEach(function (k) { ui[k] = noop; });
+    ui.ask = ui.confirm = function () { return Promise.resolve(false); };
+    ui.icons = {};
     return;
   }
 
@@ -17,14 +23,14 @@
   var inited = false;
   var $ = {};                 // fixed DOM refs
   var tab = 'lair';
-  var view = null;            // { key, root, patch }
+  var view = null;            // { tabId, visKey, parts:[{ def, host, key, inst }] }
   var lastState = null;
   var listTimer = 0, dirty = true;
   var hold = null;            // active press-and-hold
   var toastQ = [], toastLive = [];
   var MAX_TOASTS = 2, TOAST_MS = 2600;
   var sheetTimers = [];
-  var sheetOpen = false, sheetOnClose = null;
+  var sheetOpen = false, sheetOnClose = null, sheetOnAbort = null, sheetPatch = null;
   var GUST_C = 175.93;
 
   function S() { try { return opts.getState ? opts.getState() : null; } catch (e) { return null; } }
@@ -93,6 +99,122 @@
     if (aside !== undefined) { h.aside = el('span', 'aside', aside); h.appendChild(h.aside); }
     return h;
   }
+
+
+  // ================================================================ extension registries (SPEC-V2 0.3, see EXTENSIONS.md)
+  var tabDefs = [], secDefs = {}, setDefs = [], chipDefs = [], rowExtras = { building: [], tier: [] };
+  var errOnce = {}, seqN = 0;
+  // calls fn(...args); a throwing extension logs once (per tag) and yields `fallback` instead of breaking the UI
+  function safe(tag, fn, args, fallback) {
+    try { return fn.apply(null, args || []); } catch (e) {
+      if (!errOnce[tag]) { errOnce[tag] = 1; try { console.error('[HOARD] ui ' + tag, e); } catch (e2) { /* ignore */ } }
+      return fallback;
+    }
+  }
+  function byOrder(a, b) { return (num(a.order) - num(b.order)) || (num(a._seq) - num(b._seq)); }
+  function upsertById(list, def) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === def.id) { def._seq = list[i]._seq; list[i] = def; list.sort(byOrder); return; }
+    }
+    def._seq = ++seqN;
+    list.push(def);
+    list.sort(byOrder);
+  }
+  function validDef(def) { return !!def && typeof def === 'object' && typeof def.id === 'string' && !!def.id; }
+  ui.addTab = function (def) {
+    if (!validDef(def)) return false;
+    upsertById(tabDefs, def);
+    tabBarKey = ''; view = null; dirty = true;
+    return true;
+  };
+  ui.addSection = function (tabId, def) {
+    if (typeof tabId !== 'string' || !validDef(def)) return false;
+    if (tabId === 'sleep') tabId = 'legend';
+    upsertById(secDefs[tabId] = secDefs[tabId] || [], def);
+    if (tab === tabId) view = null;
+    dirty = true;
+    return true;
+  };
+  ui.removeSection = function (tabId, id) {
+    var l = secDefs[tabId];
+    if (!l) return false;
+    for (var i = 0; i < l.length; i++) if (l[i].id === id) { l.splice(i, 1); if (tab === tabId) view = null; dirty = true; return true; }
+    return false;
+  };
+  ui.addSetting = function (def) {
+    if (!validDef(def)) return false;
+    upsertById(setDefs, def);
+    return true;
+  };
+  ui.addChip = function (def) {
+    if (!validDef(def)) return false;
+    upsertById(chipDefs, def);
+    chipsBuilt = false; dirty = true;
+    return true;
+  };
+  ui.addRowExtra = function (kind, fn) {
+    if (!rowExtras[kind] || typeof fn !== 'function') return false;
+    rowExtras[kind].push(fn);
+    view = null; dirty = true;
+    return true;
+  };
+  // runs every row extra for one Lair/Brood row; returns a patch(state, stats) or null
+  function rowExtrasFor(kind, card, id, state) {
+    var fns = rowExtras[kind];
+    if (!fns || !fns.length) return null;
+    var slot = el('div', 'row-extras');
+    card.appendChild(slot);
+    var ps = [];
+    for (var i = 0; i < fns.length; i++) {
+      var r = safe('rowExtra:' + kind, fns[i], [slot, id, state, card], null);
+      if (typeof r === 'function') ps.push(r);
+    }
+    if (!ps.length) return null;
+    return function (s, st) { for (var j = 0; j < ps.length; j++) safe('rowExtra.patch:' + kind, ps[j], [s, st]); };
+  }
+  var cssDone = {};
+  ui.css = function (cssText, id) {
+    if (typeof cssText !== 'string' || !cssText) return null;
+    var k = id || ('h' + cssText.length + ':' + cssText.slice(0, 80));
+    if (cssDone[k]) return cssDone[k];
+    var st = document.createElement('style');
+    st.setAttribute('data-hoard-css', id || '');
+    st.textContent = cssText;
+    (document.head || document.documentElement).appendChild(st);
+    cssDone[k] = st;
+    return st;
+  };
+
+  // ---------------------------------------------------------------- icons (inline svg, currentColor)
+  function svg(body, extra) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"' + (extra || '') + '>' + body + '</svg>';
+  }
+  var ICONS = {
+    lair: svg('<path d="M3 20V12a9 9 0 0 1 18 0v8z"/><path d="M8 20v-5a4 4 0 0 1 8 0v5"/>'),
+    brood: svg('<path d="M12 3c3.6 0 6.5 5.2 6.5 9.6A6.5 6.5 0 0 1 5.5 12.6C5.5 8.2 8.4 3 12 3z"/><path d="M9 11l1.6 1.4L12 10.6l1.5 1.8L15 11"/>'),
+    quests: svg('<path d="M6 21V4"/><path d="M6 4h11l-2.5 4L17 12H6"/>'),
+    hoard: svg('<path d="M7 4h10l4 5-9 11L3 9z"/><path d="M3 9h18M9.5 4L12 9l2.5-5M12 9v11"/>'),
+    legend: svg('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
+    moon: svg('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
+    ember: svg('<path d="M12 21c-4 0-6.5-2.7-6.5-6.2 0-3.6 2.6-5.6 3.6-8.8 1.7 1.4 2.4 3 2.4 4.6 1-.7 1.7-2 1.8-3.6 2.6 2 4.2 4.7 4.2 7.8 0 3.5-2.6 6.2-5.5 6.2z"/><path d="M12 21c-1.6 0-2.7-1.1-2.7-2.6 0-1.7 1.4-2.6 2-4 1.6 1 3.3 2.3 3.3 4 0 1.5-1.1 2.6-2.6 2.6z"/>'),
+    flame: svg('<path d="M12 21c-4 0-6.5-2.7-6.5-6.2 0-3.6 2.6-5.6 3.6-8.8 1.7 1.4 2.4 3 2.4 4.6 1-.7 1.7-2 1.8-3.6 2.6 2 4.2 4.7 4.2 7.8 0 3.5-2.6 6.2-5.5 6.2z"/>'),
+    gear: svg('<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'),
+    chest: svg('<path d="M3 10c0-3.5 2.5-5.5 9-5.5s9 2 9 5.5v10H3z"/><path d="M3 11h18M10 11v3h4v-3"/>'),
+    lock: svg('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>'),
+    check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+    star: svg('<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>'),
+    scroll: svg('<path d="M7 4h11a2 2 0 0 1 2 2v1h-4"/><path d="M16 7v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1h10"/><path d="M7 4a2 2 0 0 0-2 2v11M9 9h4M9 12.5h4"/>'),
+    chart: svg('<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>'),
+    sound: svg('<path d="M4 10v4h3.5L12 18V6L7.5 10z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>'),
+    mute: svg('<path d="M4 10v4h3.5L12 18V6L7.5 10z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>'),
+    clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+    auto: svg('<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>'),
+    volcano: svg('<path d="M3 20l6-10h6l6 10z"/><path d="M9 10l1.5-3M15 10l-1.5-3M12 10V5"/>'),
+    snow: svg('<path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9"/><path d="M9.5 4.5L12 6.5l2.5-2M9.5 19.5L12 17.5l2.5 2"/>'),
+    wave: svg('<path d="M3 15c2 0 2-2 4.5-2s2.5 2 4.5 2 2-2 4.5-2 2.5 2 4.5 2"/><path d="M3 19.5c2 0 2-2 4.5-2s2.5 2 4.5 2 2-2 4.5-2 2.5 2 4.5 2"/><path d="M12 11V4l4 3"/>'),
+    plus: svg('<path d="M12 5v14M5 12h14"/>'),
+    back: svg('<path d="M15 5l-7 7 7 7"/>')
+  };
 
   // ---------------------------------------------------------------- data lookups
   function tierName(i, n) {
@@ -209,19 +331,25 @@
   }
 
   // ---------------------------------------------------------------- sheets / modals
+  // o: { center, dismissable (default true), onClose (dismissed / closed normally), onAbort (replaced or closed silently),
+  //      patch(state, stats) (called <= 5x/s while open), cls (extra class on .sheet), full (near full-height sheet) }
   function openSheet(node, o) {
     o = o || {};
     closeSheet(true);
     var ov = $.overlay;
+    if (!ov) return;
     ov.innerHTML = '';
-    var sh = el('div', 'sheet');
+    var sh = el('div', 'sheet' + (o.full ? ' full' : '') + (o.cls ? ' ' + o.cls : ''));
     sh.appendChild(node);
     ov.appendChild(sh);
     setCls(ov, 'center', !!o.center);
     ov.classList.add('open');
     ov._dismiss = o.dismissable !== false;
     sheetOpen = true;
-    sheetOnClose = o.onClose || null;
+    sheetOnClose = typeof o.onClose === 'function' ? o.onClose : null;
+    sheetOnAbort = typeof o.onAbort === 'function' ? o.onAbort : null;
+    sheetPatch = typeof o.patch === 'function' ? o.patch : null;
+    if (sheetPatch) { var s0 = S(); if (s0 && E) patchSheet(s0, E.stats(s0)); }
     try { var f = sh.querySelector('button'); if (f) f.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
   }
   function closeSheet(silent) {
@@ -229,12 +357,17 @@
     sheetTimers = [];
     if (!sheetOpen) return;
     sheetOpen = false;
+    sheetPatch = null;
     $.overlay.classList.remove('open');
     $.overlay.innerHTML = '';
-    var cb = sheetOnClose;
-    sheetOnClose = null;
+    var cb = sheetOnClose, ab = sheetOnAbort;
+    sheetOnClose = null; sheetOnAbort = null;
     if (cb && !silent) { try { cb(); } catch (e) { /* ignore */ } }
+    if (ab && silent) { try { ab(); } catch (e) { /* ignore */ } }
     dirty = true;
+  }
+  function patchSheet(state, st) {
+    if (sheetOpen && sheetPatch) safe('sheet.patch', sheetPatch, [state, st]);
   }
 
   // ---------------------------------------------------------------- top bar
@@ -260,22 +393,6 @@
     setCls($.gust, 'ready', ready);
     var cd = num(st.gustCooldown, 45) || 45;
     setText($.gustSub, ready ? 'Ready' : Math.ceil((1 - g) * cd) + 's');
-  }
-
-  // ---------------------------------------------------------------- badges
-  function patchBadges(state) {
-    var claim = 0;
-    for (var i = 0; i < 3; i++) { var mi = E.missionInfo(state, i); if (mi && mi.done && mi.title) claim++; }
-    setHidden($.badge.quests, claim < 1);
-    setText($.badge.quests, claim);
-    var ch = Math.floor(num(state.chests));
-    setHidden($.badge.hoard, ch < 1);
-    setText($.badge.hoard, ch > 99 ? '99+' : ch);
-    var up = E.upgradeList(state), any = false;
-    for (var j = 0; j < up.length; j++) if (up[j].visible && !up[j].bought && up[j].affordable) { any = true; break; }
-    setHidden($.badge.lair, !any);
-    setHidden($.badge.sleep, !E.canSleep(state));
-    setHidden($.badge.brood, true);
   }
 
   // ---------------------------------------------------------------- buy-amount toggle
@@ -420,6 +537,8 @@
       add(r2, g2, row.btn);
       add(c, r1, r2);
       root.appendChild(c);
+      var xp = rowExtrasFor('building', c, bd.id, state);
+      if (xp) parts.push(xp);
       parts.push(function (s, st) {
         var owned = Math.floor(num(s.buildings[bd.id]));
         setText(row.owned, fmt(owned));
@@ -496,6 +615,8 @@
       add(r2, g2, row.btn);
       add(c, r1, r2);
       root.appendChild(c);
+      var xp = rowExtrasFor('tier', c, i, state);
+      if (xp) parts.push(xp);
       parts.push(function (s, st) {
         var cnt = Math.floor(num(s.tiers[i]));
         setText(row.owned, fmt(cnt));
@@ -817,12 +938,14 @@
     openSheet(box);
   }
 
-  // ================================================================ SLEEP + settings
-  function buildSleep(state) {
-    var root = el('div');
+  // ================================================================ LEGEND tab (v1 Sleep content) + settings
+  function kvRow(a, v) { var r = el('div', 'kv'); add(r, el('span', null, a), v); return r; }
+
+  // section 'sleep' (order 10): the Long Sleep panel
+  function buildSleepSection(host, state) {
     var parts = [];
     var req = D.C.sleepReq || 1e7;
-    root.appendChild(secHead('Long Sleep'));
+    host.appendChild(secHead('Long Sleep'));
     var c = el('div', 'card');
     add(c,
       el('p', null, 'Curl up on your hoard and sleep for an age. You wake small again, but the tale of your hoard spreads. Every point of Legend adds +10% to gold/s, coin worth and brood output, for good.'),
@@ -840,7 +963,7 @@
     var sbtn = button('', 'Sleep', function () { sleepSheet(); });
     add(gainRow, gg, sbtn);
     c.appendChild(gainRow);
-    root.appendChild(c);
+    host.appendChild(c);
     parts.push(function (s) {
       var er = num(s.earnedRun);
       setW(pb.fill, er / req);
@@ -851,123 +974,169 @@
       setCls(sbtn, 'can', can);
       setDis(sbtn, !can);
     });
-
+    return function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); };
+  }
+  // section 'legendinfo' (order 12): Legend totals
+  function buildLegendInfo(host) {
     var lc = el('div', 'card');
-    var lgv = el('span'), lbv = el('span'), slv = el('span');
-    function kv(a, v) { var r = el('div', 'kv'); add(r, el('span', null, a), v); return r; }
-    add(lc, kv('Legend', lgv), kv('Legend bonus', lbv), kv('Long Sleeps taken', slv));
-    root.appendChild(lc);
-    parts.push(function (s, st) {
+    var lgv = el('span'), lpv = el('span'), lbv = el('span'), slv = el('span');
+    add(lc, kvRow('Legend earned', lgv), kvRow('Legend to spend', lpv), kvRow('Legend bonus', lbv), kvRow('Long Sleeps taken', slv));
+    host.appendChild(lc);
+    return function (s, st) {
       setText(lgv, fmt(s.legend));
+      setText(lpv, fmt(s.legendPts));
       setText(lbv, '×' + multStr(st.legendMult));
       setText(slv, fmt(s.sleeps));
-    });
-
-    root.appendChild(secHead('Your hoard so far'));
+    };
+  }
+  // section 'sofar' (order 90): v1 lifetime numbers
+  function buildSoFar(host) {
+    host.appendChild(secHead('Your hoard so far'));
     var sc = el('div', 'card');
     var a1 = el('span'), a2 = el('span'), a3 = el('span'), a4 = el('span'), a5 = el('span');
-    add(sc, kv('Gold earned, all time', a1), kv('Coins gathered', a2), kv('Treasures grabbed', a3), kv('Wing Gusts', a4), kv('Best streak', a5));
-    root.appendChild(sc);
-    parts.push(function (s) {
+    add(sc, kvRow('Gold earned, all time', a1), kvRow('Coins gathered', a2), kvRow('Treasures grabbed', a3), kvRow('Wing Gusts', a4), kvRow('Best streak', a5));
+    host.appendChild(sc);
+    return function (s) {
       var t = s.stat || {};
       setText(a1, fmt(s.earnedAll));
       setText(a2, fmt(t.coins));
       setText(a3, fmt(t.treasures));
       setText(a4, fmt(t.gusts));
       setText(a5, '×' + multStr(t.bestStreak || 1));
-    });
+    };
+  }
 
-    // settings
-    var sh = secHead('Settings');
-    sh.id = 'settings';
-    root.appendChild(sh);
-    var set = el('div', 'card');
-    function toggleRow(label, key, onChange) {
-      var r = el('div', 'toggle-row');
-      var sw = el('button', 'switch');
-      sw.type = 'button';
-      sw.setAttribute('role', 'switch');
-      sw.setAttribute('aria-label', label);
-      sw.addEventListener('click', function () {
-        var s = S();
-        if (!s) return;
-        if (!s.settings) s.settings = {};
-        s.settings[key] = !s.settings[key];
-        if (onChange) onChange(s.settings[key]);
-        dirty = true; patchNow();
-      });
-      add(r, el('span', null, label), sw);
-      parts.push(function (s) {
-        var v = !!(s.settings && s.settings[key]);
-        if (sw._v !== v) { sw._v = v; sw.setAttribute('aria-checked', v ? 'true' : 'false'); }
-      });
-      return r;
-    }
-    set.appendChild(toggleRow('Vibration', 'haptics', function (v) { if (v) buzz(10); }));
-    set.appendChild(toggleRow('Reduce motion', 'reducedMotion', applyMotionClass));
-
-    var saveP = el('p', 'sub', 'Your hoard saves on this device by itself. Copy the save to keep a backup, or paste one below to load it.');
-    saveP.style.marginTop = '12px';
-    set.appendChild(saveP);
-    var ta = el('textarea', 'savebox');
-    ta.setAttribute('aria-label', 'Save text');
-    ta.setAttribute('spellcheck', 'false');
-    ta.setAttribute('autocomplete', 'off');
-    ta.placeholder = 'Paste a save here, then press Load save.';
-    set.appendChild(ta);
-    var r1 = el('div', 'btn-row');
-    var copyB = button('', 'Copy save', function () {
+  // generic on/off row: get(state) -> bool, set(state, bool). Returns { row, patch }.
+  function toggle(label, get, set, sub) {
+    var r = el('div', 'toggle-row');
+    var sw = el('button', 'switch');
+    sw.type = 'button';
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-label', label);
+    sw.addEventListener('click', function () {
       var s = S();
       if (!s) return;
-      var txt = E.serialize(s);
-      ta.value = txt;
-      var fallback = function () {
-        try { ta.focus(); ta.select(); ta.setSelectionRange(0, txt.length); } catch (e) { /* ignore */ }
-        try { if (document.execCommand && document.execCommand('copy')) { toast('Save copied.', '', 'moss'); return; } } catch (e) { /* ignore */ }
-        toast('Save shown below.', 'Select it and copy.', '');
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(txt).then(function () { toast('Save copied.', 'Keep it somewhere safe.', 'moss'); }, fallback);
-        } else fallback();
-      } catch (e) { fallback(); }
+      var v = !safe('toggle:' + label, get, [s], false);
+      safe('toggle:' + label, set, [s, v]);
+      patch(s);
+      dirty = true; patchNow();
     });
-    var loadB = button('', 'Load save', function () {
-      var txt = String(ta.value || '').trim();
-      if (!txt) { toast('Paste a save first.', '', 'ember'); return; }
-      var parsed = null;
-      try { parsed = JSON.parse(txt); } catch (e) { parsed = null; }
-      if (!parsed || typeof parsed !== 'object' || (!Array.isArray(parsed.tiers) && typeof parsed.json !== 'string')) {
-        toast('That is not a Hoard save.', '', 'ember');
-        return;
-      }
-      confirmSheet('Load this save?', 'Your current hoard is replaced by the pasted one. Copy your current save first if you want to keep it.',
-        'Load save', 'Keep current', false, function () {
-          var ns = E.deserialize(parsed);
-          if (opts.replaceState) opts.replaceState(ns);
-          ta.value = '';
-          toast('Save loaded.', '', 'moss');
-        });
-    });
-    add(r1, copyB, loadB);
-    set.appendChild(r1);
-    var r2 = el('div', 'btn-row');
-    r2.style.marginTop = '18px';
-    r2.appendChild(button('danger', 'Start over', function () {
-      confirmSheet('Start over from nothing?', 'This erases all gold, brood, cards, chests and Legend on this device and in your cloud save. It cannot be undone.',
-        'Erase everything', 'Keep my hoard', true, function () {
-          if (opts.resetAll) opts.resetAll();
-          toast('A new egg, a new hoard.', '', '');
-          setTab('lair');
-        });
-    }));
-    set.appendChild(r2);
-    root.appendChild(set);
-    root.appendChild(el('p', 'hint', 'Hoard v1. Swipe the cave to gather gold. A quick flick sends a Wing Gust.'));
-
-    return { root: root, patch: function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); } };
+    var lab = el('span', 'tl');
+    lab.appendChild(el('span', null, label));
+    if (sub) lab.appendChild(el('small', 'sub', sub));
+    add(r, lab, sw);
+    function patch(s) {
+      var v = !!safe('toggle:' + label, get, [s], false);
+      if (sw._v !== v) { sw._v = v; sw.setAttribute('aria-checked', v ? 'true' : 'false'); }
+    }
+    return { row: r, sw: sw, patch: patch };
   }
-  function keySleep() { return 'S'; }
+  function settingToggle(label, key, onChange) {
+    return toggle(label, function (s) { return !!(s.settings && s.settings[key]); }, function (s, v) {
+      if (!s.settings) s.settings = {};
+      s.settings[key] = v;
+      if (onChange) onChange(v);
+    });
+  }
+  function copyText(txt, ta, okTitle) {
+    var fallback = function () {
+      if (ta) {
+        ta.value = txt;
+        try { ta.focus(); ta.select(); ta.setSelectionRange(0, txt.length); } catch (e) { /* ignore */ }
+        try { if (document.execCommand && document.execCommand('copy')) { toast(okTitle || 'Copied.', '', 'moss'); return; } } catch (e) { /* ignore */ }
+      }
+      toast('Shown below.', 'Select it and copy.', '');
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () { toast(okTitle || 'Copied.', '', 'moss'); }, fallback);
+      } else fallback();
+    } catch (e) { fallback(); }
+  }
+
+  // v1 settings rows, registered like any module's rows
+  var V1_SETTINGS = [
+    { id: 'haptics', order: 10, build: function (host) {
+      var t = settingToggle('Vibration', 'haptics', function (v) { if (v) buzz(10); });
+      host.appendChild(t.row); return t.patch;
+    } },
+    { id: 'motion', order: 20, build: function (host) {
+      var t = settingToggle('Reduce motion', 'reducedMotion', applyMotionClass);
+      host.appendChild(t.row); return t.patch;
+    } },
+    { id: 'save', order: 80, build: function (host) {
+      var saveP = el('p', 'sub', 'Your hoard saves on this device by itself. Copy the save to keep a backup, or paste one below to load it.');
+      saveP.style.marginTop = '12px';
+      host.appendChild(saveP);
+      var ta = el('textarea', 'savebox');
+      ta.setAttribute('aria-label', 'Save text');
+      ta.setAttribute('spellcheck', 'false');
+      ta.setAttribute('autocomplete', 'off');
+      ta.placeholder = 'Paste a save here, then press Load save.';
+      host.appendChild(ta);
+      var r1 = el('div', 'btn-row');
+      var copyB = button('', 'Copy save', function () {
+        var s = S();
+        if (!s) return;
+        var txt = E.serialize(s);
+        ta.value = txt;
+        copyText(txt, ta, 'Save copied.');
+      });
+      var loadB = button('', 'Load save', function () {
+        var txt = String(ta.value || '').trim();
+        if (!txt) { toast('Paste a save first.', '', 'ember'); return; }
+        var parsed = null;
+        try { parsed = JSON.parse(txt); } catch (e) { parsed = null; }
+        if (!parsed || typeof parsed !== 'object' || (!Array.isArray(parsed.tiers) && typeof parsed.json !== 'string')) {
+          toast('That is not a Hoard save.', '', 'ember');
+          return;
+        }
+        confirmSheet('Load this save?', 'Your current hoard is replaced by the pasted one. Copy your current save first if you want to keep it.',
+          'Load save', 'Keep current', false, function () {
+            var ns = E.deserialize(parsed);
+            if (opts.replaceState) opts.replaceState(ns);
+            toast('Save loaded.', '', 'moss');
+          });
+      });
+      add(r1, copyB, loadB);
+      host.appendChild(r1);
+    } },
+    { id: 'reset', order: 90, build: function (host) {
+      var r2 = el('div', 'btn-row');
+      r2.style.marginTop = '18px';
+      r2.appendChild(button('danger', 'Start over', function () {
+        confirmSheet('Start over from nothing?', 'This erases all gold, brood, cards, chests and Legend on this device and in your cloud save. It cannot be undone.',
+          'Erase everything', 'Keep my hoard', true, function () {
+            if (opts.resetAll) opts.resetAll();
+            toast('A new egg, a new hoard.', '', '');
+            setTab('lair');
+          });
+      }));
+      host.appendChild(r2);
+    } }
+  ];
+
+  function openSettings() {
+    var box = el('div', 'settings-sheet');
+    var head = el('div', 'sheet-head');
+    add(head, el('h3', null, 'Settings'), button('ghost small', 'Close', function () { closeSheet(); }));
+    box.appendChild(head);
+    var patches = [];
+    var s0 = S();
+    setDefs.forEach(function (d) {
+      var host = el('div', 'set-row');
+      host.setAttribute('data-setting', d.id);
+      box.appendChild(host);
+      var r = typeof d.build === 'function' ? safe('setting:' + d.id, d.build, [host, s0], null) : null;
+      if (typeof r === 'function') patches.push({ id: d.id, fn: r });
+      else if (r && typeof r.patch === 'function') patches.push({ id: d.id, fn: r.patch });
+    });
+    box.appendChild(el('p', 'hint ver', 'Hoard v2. Swipe the cave to gather gold. A quick flick sends a Wing Gust.'));
+    openSheet(box, {
+      cls: 'settings',
+      patch: function (s, st) { for (var i = 0; i < patches.length; i++) safe('setting.patch:' + patches[i].id, patches[i].fn, [s, st]); }
+    });
+  }
 
   function confirmSheet(title, text, yes, no, danger, onYes) {
     var box = el('div');
@@ -1004,57 +1173,190 @@
     openSheet(box, { center: true });
   }
 
-  // ---------------------------------------------------------------- tabs
-  var TABS = {
-    lair: { build: buildLair, key: keyLair },
-    brood: { build: buildBrood, key: keyBrood },
-    quests: { build: buildQuests, key: keyQuests },
-    hoard: { build: buildHoard, key: keyHoard },
-    sleep: { build: buildSleep, key: keySleep }
-  };
+  // ---------------------------------------------------------------- tabs (registry driven)
+  function tabById(id) { for (var i = 0; i < tabDefs.length; i++) if (tabDefs[i].id === id) return tabDefs[i]; return null; }
+  function tabVisible(t, state) { return !t.visible || !!safe('tab.visible:' + t.id, t.visible, [state], false); }
+  function visibleTabs(state) { return tabDefs.filter(function (t) { return tabVisible(t, state); }); }
+  var tabBarKey = '';
+  function buildTabBar(state) {
+    if (!$.tabs) return;
+    var vis = visibleTabs(state);
+    var key = vis.map(function (t) { return t.id + '/' + (t.label || ''); }).join(',');
+    if (key === tabBarKey) return;
+    tabBarKey = key;
+    $.tabs.innerHTML = '';
+    $.tabBtns = [];
+    $.badge = {};
+    vis.forEach(function (t) {
+      var b = el('button');
+      b.type = 'button';
+      b.setAttribute('data-tab', t.id);
+      b.innerHTML = t.icon || ICONS.star;
+      b.appendChild(el('span', 't-label', t.label || t.id));
+      var bd = el('span', 'badge');
+      bd.setAttribute('data-badge', t.id);
+      bd.hidden = true; bd._h = true;
+      b.appendChild(bd);
+      $.badge[t.id] = bd;
+      b.addEventListener('click', function () { closeSheet(true); setTab(t.id); });
+      $.tabs.appendChild(b);
+      $.tabBtns.push(b);
+    });
+    $.tabs.setAttribute('data-n', String(vis.length));
+    if (!vis.some(function (t) { return t.id === tab; }) && vis.length) { tab = vis[0].id; view = null; }
+    markTabs();
+  }
+  function markTabs() {
+    for (var i = 0; i < ($.tabBtns || []).length; i++) {
+      var b = $.tabBtns[i];
+      var on = b.getAttribute('data-tab') === tab;
+      setCls(b, 'on', on);
+      b.setAttribute('aria-current', on ? 'page' : 'false');
+    }
+  }
   function setTab(name) {
-    if (!TABS[name]) return;
+    if (name === 'sleep') name = 'legend'; // v1 id
+    var t = tabById(name);
+    var s = S();
+    if (!t || (s && !tabVisible(t, s))) return;
     stopHold();
     if (tab !== name) {
       tab = name;
       view = null;
       if ($.panel) $.panel.scrollTop = 0;
     }
-    for (var i = 0; i < $.tabBtns.length; i++) {
-      var b = $.tabBtns[i];
-      var on = b.getAttribute('data-tab') === name;
-      setCls(b, 'on', on);
-      b.setAttribute('aria-current', on ? 'page' : 'false');
-    }
+    markTabs();
     dirty = true;
     patchNow();
   }
+  function patchBadges(state) {
+    for (var i = 0; i < tabDefs.length; i++) {
+      var t = tabDefs[i], b = $.badge && $.badge[t.id];
+      if (!b) continue;
+      var n = 0, dot = false;
+      var vals = [];
+      if (typeof t.badge === 'function') vals.push(safe('badge:' + t.id, t.badge, [state], 0));
+      var ss = secDefs[t.id] || [];
+      for (var j = 0; j < ss.length; j++) if (typeof ss[j].badge === 'function') vals.push(safe('badge:' + t.id + '.' + ss[j].id, ss[j].badge, [state], 0));
+      for (var k = 0; k < vals.length; k++) {
+        var v = vals[k];
+        if (typeof v === 'number') { if (v > 0 && isFinite(v)) n += Math.floor(v); } else if (v) dot = true;
+      }
+      setHidden(b, !(n > 0 || dot));
+      setCls(b, 'dot', !(n > 0) && dot);
+      setText(b, n > 0 ? (n > 99 ? '99+' : String(n)) : '');
+    }
+  }
+
+  // the panel = the active tab's own build (pseudo-section '_tab') + its registered sections, by order
+  function partsFor(t) {
+    var list = [];
+    if (typeof t.build === 'function' || typeof t.patch === 'function') {
+      list.push({ id: '_tab', order: t.buildOrder !== undefined ? t.buildOrder : 0, build: t.build, key: t.key, patch: t.patch, _seq: 0 });
+    }
+    (secDefs[t.id] || []).forEach(function (sd) { list.push(sd); });
+    list.sort(byOrder);
+    return list;
+  }
+  function keyOf(d, state) { return typeof d.key === 'function' ? String(safe('key:' + d.id, d.key, [state], '?')) : ''; }
+  function buildPart(p, state) {
+    p.host.innerHTML = '';
+    p.key = keyOf(p.def, state);
+    p.inst = null;
+    if (typeof p.def.build !== 'function') return;
+    var r = safe('build:' + p.def.id, p.def.build, [p.host, state], null);
+    if (typeof r === 'function') p.inst = r;
+    else if (r && typeof r === 'object') {
+      if (r.root && r.root.nodeType === 1 && r.root.parentNode !== p.host) p.host.appendChild(r.root);
+      if (typeof r.patch === 'function') p.inst = r.patch;
+    }
+  }
+  function patchPart(p, state, st) {
+    if (p.inst) safe('patch:' + p.def.id, p.inst, [state, st]);
+    if (typeof p.def.patch === 'function') safe('patch:' + p.def.id, p.def.patch, [state, st, p.host]);
+  }
   function refreshPanel(state, st) {
-    var t = TABS[tab];
-    var key = '';
-    try { key = t.key(state); } catch (e) { key = '?'; }
-    var stale = !view || view.key !== key || state !== lastState;
-    if (stale && !(hold && view && state === lastState)) {
-      stopHold(); // the held button is about to be detached; never let its repeat outlive it
-      var top = $.panel.scrollTop;
-      var keepScroll = !!view && state === lastState;
-      var v = t.build(state);
-      v.key = key;
-      $.panel.innerHTML = '';
-      $.panel.appendChild(v.root);
-      view = v;
-      if (keepScroll) $.panel.scrollTop = top;
+    buildTabBar(state);
+    var t = tabById(tab);
+    if (!t || !tabVisible(t, state)) {
+      var vis = visibleTabs(state);
+      if (!vis.length) return;
+      t = vis[0]; tab = t.id; view = null; markTabs();
+    }
+    var defs = partsFor(t).filter(function (d) { return !d.visible || !!safe('visible:' + d.id, d.visible, [state], false); });
+    var visKey = t.id + ':' + defs.map(function (d) { return d.id; }).join(',');
+    var sameState = state === lastState;
+    var holdLock = !!(hold && view && sameState);
+    if (!holdLock) {
+      if (!view || view.visKey !== visKey || !sameState) {
+        stopHold(); // the held button is about to be detached; never let its repeat outlive it
+        var keepScroll = !!view && sameState && view.tabId === t.id;
+        var top = $.panel.scrollTop;
+        $.panel.innerHTML = '';
+        view = { tabId: t.id, visKey: visKey, parts: [] };
+        defs.forEach(function (d) {
+          var host = el('div', 'sec');
+          host.setAttribute('data-sec', t.id + '.' + d.id);
+          $.panel.appendChild(host);
+          var p = { def: d, host: host };
+          buildPart(p, state);
+          view.parts.push(p);
+        });
+        if (keepScroll) $.panel.scrollTop = top;
+      } else {
+        for (var i = 0; i < view.parts.length; i++) {
+          var p = view.parts[i];
+          if (keyOf(p.def, state) !== p.key) {
+            stopHold();
+            var top2 = $.panel.scrollTop;
+            buildPart(p, state);
+            $.panel.scrollTop = top2;
+          }
+        }
+      }
     }
     lastState = state;
-    if (view) view.patch(state, st);
+    for (var j = 0; j < view.parts.length; j++) patchPart(view.parts[j], state, st);
     patchBadges(state);
   }
+
+  // ---------------------------------------------------------------- top-bar chips (addChip)
+  var chipsBuilt = false;
+  function patchChips(state, st) {
+    if (!$.chips) return;
+    if (!chipsBuilt) {
+      chipsBuilt = true;
+      Array.prototype.forEach.call($.chips.querySelectorAll('.xchip'), function (n) { n.parentNode.removeChild(n); });
+      chipDefs.forEach(function (c) {
+        var n;
+        if (typeof c.onPress === 'function') {
+          n = el('button', 'chip xchip press' + (c.cls ? ' ' + c.cls : ''));
+          n.type = 'button';
+          n.addEventListener('click', function () { safe('chip.press:' + c.id, c.onPress, [S()]); dirty = true; });
+        } else n = el('span', 'chip xchip' + (c.cls ? ' ' + c.cls : ''));
+        n.setAttribute('data-chip', c.id);
+        n.hidden = true; n._h = true;
+        $.chips.appendChild(n);
+        c._el = n;
+      });
+    }
+    for (var i = 0; i < chipDefs.length; i++) {
+      var c = chipDefs[i];
+      if (!c._el) continue;
+      var vis = !c.visible || !!safe('chip.visible:' + c.id, c.visible, [state, st], false);
+      setHidden(c._el, !vis);
+      if (vis && typeof c.text === 'function') setText(c._el, safe('chip.text:' + c.id, c.text, [state, st], ''));
+    }
+  }
+
   function patchNow() {
     var s = S();
     if (!s || !inited) return;
     try {
       var st = E.stats(s);
       refreshPanel(s, st);
+      patchChips(s, st);
+      patchSheet(s, st);
       frameTop(s, st);
       listTimer = 0;
       dirty = false;
@@ -1137,20 +1439,83 @@
     openSheet(box, { center: true });
   };
 
+  // ---------------------------------------------------------------- v1 content, registered through the v2 API
+  ui.addTab({ id: 'lair', label: 'Lair', icon: ICONS.lair, order: 10,
+    build: function (host, state) { return buildLair(state); }, key: keyLair,
+    badge: function (s) {
+      var up = E.upgradeList(s);
+      for (var j = 0; j < up.length; j++) if (up[j].visible && !up[j].bought && up[j].affordable) return true;
+      return 0;
+    } });
+  ui.addTab({ id: 'brood', label: 'Brood', icon: ICONS.brood, order: 20,
+    build: function (host, state) { return buildBrood(state); }, key: keyBrood });
+  ui.addTab({ id: 'quests', label: 'Quests', icon: ICONS.quests, order: 30,
+    build: function (host, state) { return buildQuests(state); }, key: keyQuests,
+    badge: function (s) {
+      var claim = 0;
+      for (var i = 0; i < 3; i++) { var mi = E.missionInfo(s, i); if (mi && mi.done && mi.title) claim++; }
+      return claim;
+    } });
+  ui.addTab({ id: 'hoard', label: 'Hoard', icon: ICONS.hoard, order: 40,
+    build: function (host, state) { return buildHoard(state); }, key: keyHoard,
+    badge: function (s) { return Math.floor(num(s.chests)); } });
+  ui.addTab({ id: 'legend', label: 'Legend', icon: ICONS.legend, order: 60,
+    badge: function (s) { return E.canSleep(s) ? true : 0; } });
+  ui.addSection('legend', { id: 'sleep', order: 10, build: buildSleepSection, key: function () { return 'S'; } });
+  ui.addSection('legend', { id: 'legendinfo', order: 12, build: buildLegendInfo });
+  ui.addSection('legend', { id: 'sofar', order: 90, build: buildSoFar });
+  V1_SETTINGS.forEach(function (d) { ui.addSetting(d); });
+
+  // ---------------------------------------------------------------- exports
   ui.toast = toast;
-  ui.refresh = function () { stopHold(); dirty = true; view = null; patchNow(); };
-  // two-choice sheet; onNo also runs when the sheet is dismissed
-  ui.ask = function (title, text, yes, no, onYes, onNo) {
-    var box = el('div');
-    add(box, el('h3', null, title), el('p', 'muted', text));
-    var br = el('div', 'btn-row');
-    add(br, button('ghost', no, function () { closeSheet(); }),
-      button('can', yes, function () { closeSheet(true); try { onYes(); } catch (e) { /* ignore */ } dirty = true; }));
-    box.appendChild(br);
-    openSheet(box, { center: true, dismissable: false, onClose: onNo });
+  ui.refresh = function () {
+    stopHold();
+    try { if (E && E.dirty) E.dirty(); } catch (e) { /* ignore */ }
+    dirty = true; view = null; tabBarKey = ''; chipsBuilt = false;
+    patchNow();
+  };
+  ui.markDirty = function () { dirty = true; };
+  // ask(title, text, yesLabel, noLabel[, {danger}]) -> Promise<bool>; v1 form ask(..., onYes, onNo) still works
+  ui.ask = function (title, text, yes, no, a5, a6) {
+    var legacy = typeof a5 === 'function' || typeof a6 === 'function';
+    var o = (!legacy && a5 && typeof a5 === 'object') ? a5 : {};
+    return new Promise(function (resolve) {
+      var done = false, chosen = false;
+      function finish(v) {
+        if (done) return;
+        done = true;
+        if (legacy) { var cb = v ? a5 : a6; if (typeof cb === 'function') { try { cb(); } catch (e) { /* ignore */ } } }
+        resolve(!!v);
+      }
+      var box = el('div');
+      add(box, el('h3', null, title || ''), el('p', 'muted', text || ''));
+      var br = el('div', 'btn-row');
+      add(br, button('ghost', no || 'No', function () { closeSheet(); }),
+        button(o.danger ? 'danger' : 'can', yes || 'Yes', function () { chosen = true; closeSheet(true); finish(true); dirty = true; }));
+      box.appendChild(br);
+      openSheet(box, {
+        center: true, dismissable: legacy ? false : o.dismissable !== false,
+        onClose: function () { finish(false); },
+        onAbort: legacy ? null : function () { if (!chosen) finish(false); }
+      });
+    });
   };
   ui.setTab = setTab;
+  ui.currentTab = function () { return tab; };
+  ui.sheet = function (node, o) { if (node) openSheet(node, o || {}); };
   ui.closeSheet = function () { closeSheet(); };
+  ui.sheetOpen = function () { return sheetOpen; };
+  ui.openSettings = openSettings;
+  ui.icons = ICONS;
+  ui.state = S;
+  ui.copyText = function (txt, ta, okTitle) { copyText(String(txt), ta || null, okTitle); };
+  // v1 helpers for feature modules (same look and behaviour as the core panels)
+  ui.el = el; ui.add = add; ui.button = button; ui.bindHold = bindHold; ui.bar = bar; ui.costLine = costLine;
+  ui.buyButton = buyButton; ui.secHead = secHead; ui.amtToggle = amtToggle; ui.kv = kvRow; ui.toggle = toggle;
+  ui.setText = setText; ui.setCls = setCls; ui.setHidden = setHidden; ui.setW = setW; ui.setDis = setDis;
+  ui.milestoneBits = milestoneBits; ui.milestonePatch = milestonePatch; ui.buyAmt = buyAmt;
+  ui.buzz = buzz; ui.multStr = multStr; ui.clock = clock; ui.plural = plural; ui.num = num; ui.reducedMotion = reducedMotion;
+  ui.confirm = function (title, text, yes, no, danger) { return ui.ask(title, text, yes, no, { danger: !!danger }); };
 
   // ---------------------------------------------------------------- init + frame
   ui.init = function (o) {
@@ -1160,6 +1525,7 @@
     if (inited) { view = null; dirty = true; patchNow(); return; }
     $.gold = document.getElementById('gold');
     $.gps = document.getElementById('gps');
+    $.chips = document.querySelector('#top .chips');
     $.chipStreak = document.getElementById('chip-streak');
     $.chipFrenzy = document.getElementById('chip-frenzy');
     $.chipEmber = document.getElementById('chip-ember');
@@ -1170,23 +1536,17 @@
     $.toasts = document.getElementById('toasts');
     $.panel = document.getElementById('panel');
     $.overlay = document.getElementById('overlay');
-    $.tabBtns = Array.prototype.slice.call(document.querySelectorAll('#tabs button[data-tab]'));
+    $.tabs = document.getElementById('tabs');
+    $.tabBtns = [];
     $.badge = {};
-    Array.prototype.forEach.call(document.querySelectorAll('[data-badge]'), function (b) { $.badge[b.getAttribute('data-badge')] = b; });
-    if (!$.gold || !$.panel || !$.overlay) return;
+    if (!$.gold || !$.panel || !$.overlay || !$.tabs) return;
     inited = true;
 
-    $.tabBtns.forEach(function (b) {
-      b.addEventListener('click', function () { closeSheet(true); setTab(b.getAttribute('data-tab')); });
-    });
     $.gust.addEventListener('click', function () {
       try { if (HOARD.cave && HOARD.cave.gust) HOARD.cave.gust(); } catch (e) { /* ignore */ }
     });
     var setBtn = document.getElementById('btn-settings');
-    if (setBtn) setBtn.addEventListener('click', function () {
-      setTab('sleep');
-      try { var t = document.getElementById('settings'); if (t) t.scrollIntoView({ block: 'start' }); } catch (e) { /* ignore */ }
-    });
+    if (setBtn) setBtn.addEventListener('click', function () { openSettings(); });
     $.overlay.addEventListener('click', function (e) {
       if (e.target === $.overlay && $.overlay._dismiss) closeSheet();
     });
@@ -1201,6 +1561,7 @@
     var s = S();
     applyMotionClass(!!(s && s.settings && s.settings.reducedMotion));
     bindEvents();
+    if (s) buildTabBar(s);
     setTab('lair');
   };
 
@@ -1216,6 +1577,8 @@
         listTimer = 0;
         dirty = false;
         refreshPanel(s, st);
+        patchChips(s, st);
+        patchSheet(s, st);
       }
       frameTop(s, st);
     } catch (e) {

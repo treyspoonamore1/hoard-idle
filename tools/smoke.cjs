@@ -154,17 +154,38 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     await page.keyboard.press('Escape'); await page.waitForTimeout(400);
   }
 
-  // Sleep
-  await tab('sleep');
-  await textOk('sleep');
-  await page.screenshot({ path: SHOTS + '/smoke-sleep.png', fullPage: false });
+  // Legend (v1 Sleep tab, renamed in v2)
+  const tabIds = await page.evaluate(() => Array.from(document.querySelectorAll('#tabs [data-tab]')).map(b => b.getAttribute('data-tab')));
+  check(JSON.stringify(tabIds.slice(0, 5)) === JSON.stringify(['lair', 'brood', 'quests', 'hoard', 'legend']), 'tab bar order ' + tabIds.join(','));
+  await tab('legend');
+  await textOk('legend');
+  const legendTxt = await page.evaluate(() => document.getElementById('panel').innerText);
+  check(/Long Sleep/.test(legendTxt) && /Legend to spend/.test(legendTxt), 'legend tab shows Long Sleep + Legend sections');
+  check(!/Start over|Copy save/.test(legendTxt), 'settings moved out of the Legend tab');
+  await page.screenshot({ path: SHOTS + '/smoke-legend.png', fullPage: false });
 
-  // settings
+  // settings sheet from the gear
   await page.locator('#btn-settings').click();
   await page.waitForTimeout(500);
+  check(await page.evaluate(() => document.getElementById('overlay').classList.contains('open') && !!document.querySelector('#overlay .settings-sheet')), 'gear opens the Settings sheet');
+  const setTxt = await page.evaluate(() => document.querySelector('#overlay').innerText);
+  check(/Vibration/.test(setTxt) && /Reduce motion/.test(setTxt) && /Copy save/.test(setTxt) && /Start over/.test(setTxt) && /Play log/.test(setTxt), 'settings sheet rows (vibration, motion, play log, save, start over)');
   await textOk('settings');
   await page.screenshot({ path: SHOTS + '/smoke-settings.png' });
+  // toggle vibration off and on through the sheet
+  const hp0 = await page.evaluate(() => HOARD.state.settings.haptics);
+  await page.locator('#overlay [data-setting="haptics"] .switch').click(); await page.waitForTimeout(250);
+  const hp1 = await page.evaluate(() => HOARD.state.settings.haptics);
+  check(hp1 === !hp0, 'vibration toggle works in the sheet');
+  await page.locator('#overlay [data-setting="haptics"] .switch').click(); await page.waitForTimeout(250);
+  // play log has entries (session start at least) and copies
+  const logN = await page.evaluate(() => HOARD.log.count());
+  check(logN >= 1, 'play log has entries (' + logN + ')');
+  await page.evaluate(() => { const p = document.querySelector('#overlay .loglist'); if (p) p.scrollIntoView(); });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: SHOTS + '/smoke-settings-log.png' });
   await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  check(!(await page.evaluate(() => document.getElementById('overlay').classList.contains('open'))), 'settings sheet closes on Escape');
 
   // mid-game state screenshot: rank 6 with lots of everything
   await page.evaluate(() => { const s = HOARD.state; s.rank = 6; s.gold = 3e9; s.tiers = [5000, 400, 80, 20, 3]; s.legend = 4; HOARD.ui.refresh(); });
@@ -185,6 +206,44 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   console.log('before reload', JSON.stringify(before), 'after', JSON.stringify(restored));
   check(restored.digger === before.digger && restored.gold >= before.gold * 0.99 && restored.cards === before.cards, 'save restored after reload');
   await textOk('after reload');
+
+  // v2 extension API smoke: a 6th tab, a section, a chip, a setting, a row extra, a cave layer, ask()
+  await page.evaluate(() => {
+    const ui = HOARD.ui;
+    window.__x = { layer: 0, sfx: [] };
+    ui.addTab({ id: 'xtest', label: 'Ember', icon: ui.icons.ember, order: 50, visible: () => true,
+      build: (host) => { host.appendChild(ui.secHead('Test tab')); const p = ui.el('p', 'hint', 'n=0'); host.appendChild(p); return (s) => ui.setText(p, 'gold ' + HOARD.fmt(s.gold)); },
+      badge: () => 2 });
+    ui.addSection('legend', { id: 'xsec', order: 5, build: (host) => { host.appendChild(ui.el('div', 'card', 'Section from a module')); } });
+    ui.addChip({ id: 'xchip', order: 1, visible: () => true, text: () => 'Auto', onPress: () => { window.__x.chip = 1; } });
+    ui.addRowExtra('building', (slot, id) => { if (id === 'digger') slot.appendChild(ui.el('small', 'sub', 'extra:' + id)); });
+    HOARD.cave.addLayer({ id: 'xlayer', z: -1, draw: (ctx, w, h) => { window.__x.layer++; ctx.fillStyle = 'rgba(232,99,58,0.25)'; ctx.fillRect(4, h - 30, 24, 24); } });
+    HOARD.cave.addSfxHook((name) => window.__x.sfx.push(name));
+  });
+  await page.setViewportSize({ width: 360, height: 760 });
+  await page.waitForTimeout(600);
+  const tb = await page.evaluate(() => {
+    const bs = Array.from(document.querySelectorAll('#tabs [data-tab]'));
+    return { n: bs.length, ids: bs.map(b => b.getAttribute('data-tab')), clipped: bs.filter(b => { const l = b.querySelector('.t-label'); return l && l.scrollWidth > l.clientWidth + 1; }).length,
+      minW: Math.min(...bs.map(b => b.getBoundingClientRect().width)), sw: document.documentElement.scrollWidth };
+  });
+  check(tb.n === 6 && tb.ids[4] === 'xtest' && tb.clipped === 0 && tb.minW >= 48 && tb.sw <= 360, '6 tabs fit at 360px ' + JSON.stringify(tb));
+  await tab('xtest');
+  check(/Test tab/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'registered tab renders');
+  check(await page.evaluate(() => !document.querySelector('[data-chip="xchip"]').hidden), 'registered chip visible');
+  await page.locator('[data-chip="xchip"]').click(); await page.waitForTimeout(100);
+  check(await page.evaluate(() => window.__x.chip === 1), 'chip onPress fires');
+  await page.screenshot({ path: SHOTS + '/smoke-6tabs-360.png' });
+  await tab('legend');
+  check(/Section from a module/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'registered legend section renders');
+  await tab('lair');
+  check(/extra:digger/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'row extra renders in Lair');
+  check(await page.evaluate(() => window.__x.layer > 5), 'cave layer draws');
+  const askP = page.evaluate(() => HOARD.ui.ask('Test?', 'Pick one', 'Yes', 'No'));
+  await page.waitForTimeout(300);
+  await page.locator('#overlay button').filter({ hasText: 'Yes' }).click();
+  check((await askP) === true, 'ui.ask resolves true on Yes');
+  await page.setViewportSize({ width: 412, height: 915 });
 
   // let it run a bit to catch tick-time errors
   await page.waitForTimeout(1500);

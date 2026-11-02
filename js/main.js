@@ -1,7 +1,8 @@
 /* Hoard — main.js
  * Boot, game loop, autosave (localStorage every 10 s, cloud db every 60 s if
- * changed), offline welcome-back, visibility handling, hot-reload hook.
- * Works with no window.claude at all.
+ * changed), offline welcome-back, visibility handling, hot-reload hook, playtest log wiring.
+ * v2: saves stay under the same key/doc; a migrated (older-version) save is first copied to
+ * localStorage 'hoard.save.backup.v1' (once). Works with no window.claude at all.
  */
 (function () {
   'use strict';
@@ -9,7 +10,8 @@
   if (typeof document === 'undefined') return;
 
   var E = HOARD.engine;
-  var LS_KEY = 'hoard.save.v1';
+  var LS_KEY = 'hoard.save.v1';            // never changes (v2 saves live here too)
+  var BACKUP_KEY = 'hoard.save.backup.v1';  // pre-migration copy, written once
   var LOCAL_MS = 10000, CLOUD_MS = 60000;
   var OFFLINE_MODAL_MIN = 60;
 
@@ -39,6 +41,17 @@
   // ---------------------------------------------------------------- local save
   function lsGet() { try { return localStorage.getItem(LS_KEY); } catch (e) { return null; } }
   function lsSet(s) { try { localStorage.setItem(LS_KEY, s); } catch (e) { /* ignore */ } }
+  // keep the raw save from before a version migration, once (never overwritten)
+  function backupOnce(raw) {
+    if (!raw) return;
+    try {
+      var v = E.saveVersion ? E.saveVersion(raw) : 0;
+      if (!(v > 0) || v >= (E.version || 1)) return;
+      if (localStorage.getItem(BACKUP_KEY)) return;
+      localStorage.setItem(BACKUP_KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
+    } catch (e) { /* ignore */ }
+  }
+  function logCall(name, a, b) { try { if (HOARD.log && typeof HOARD.log[name] === 'function') HOARD.log[name](a, b); } catch (e) { log(e); } }
   function savedAtOf(raw) {
     try {
       var o = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -57,6 +70,7 @@
     var json = '';
     try { json = E.serialize(state); } catch (e) { log(e); return ''; }
     lsSet(json);
+    E.emit('save', { where: 'local' });
     return json;
   }
 
@@ -74,6 +88,7 @@
     try { p = cloudDoc.set({ json: json, savedAt: savedAt }); } catch (e) { p = Promise.reject(e); }
     Promise.resolve(p).then(function () {
       cloudLastBody = body;
+      E.emit('save', { where: 'cloud' });
     }, function (e) {
       log(e);
     }).then(function () {
@@ -95,6 +110,7 @@
     (async function () {
       try {
         var db = await c.use('db');
+        if (db) logCall('attachDb', db); // playtest log: writes only from now on, throttled
         var user = await c.use('user');
         if (!db || !user || typeof user.id !== 'function') return;
         var id = await user.id();
@@ -123,7 +139,9 @@
         }
         var take = function () {
           stateSwapCount++;
+          backupOnce(data.json);
           adopt(E.deserialize(data.json), true);
+          logCall('stateReplaced', 'cloud');
           saveLocal();
           cloudLastBody = stripSavedAt(data.json);
           cloudDoc = doc;
@@ -193,6 +211,7 @@
       hiddenAt = 0;
       if (away >= 2) {
         var res = runOffline(away);
+        if (res && num(res.seconds) >= 1) logCall('event', 'offline', { sec: Math.round(num(res.seconds)), gold: Math.round(num(res.gold)) });
         if (res && num(res.seconds) >= OFFLINE_MODAL_MIN) {
           try { HOARD.ui.welcome(res); } catch (e) { log(e); }
         }
@@ -208,6 +227,7 @@
     var fromHot = data !== null && data !== undefined && data !== '';
     var local = lsGet();
     bootedFromHot = fromHot;
+    backupOnce(fromHot ? data : local); // before anything can overwrite an older-version save
     try { state = E.deserialize(fromHot ? data : local); } catch (e) { log(e); state = E.newState(); }
     if (!state) state = E.newState();
     localLoadedAt = fromHot ? num(state.savedAt) : (local ? savedAtOf(local) : 0);
@@ -234,15 +254,21 @@
           stateSwapCount++;
           adopt(ns, false);
           saveAll(true);
+          logCall('stateReplaced', 'load');
         },
         resetAll: function () {
           stateSwapCount++;
           adopt(E.newState(), false);
           saveAll(true);
+          logCall('stateReplaced', 'reset');
         },
         saveNow: function (forceCloud) { saveAll(!!forceCloud); }
       });
     } catch (e) { log(e); }
+
+    try { if (HOARD.log && HOARD.log.init) HOARD.log.init(getState); } catch (e) { log(e); }
+    if (off && num(off.seconds) >= 1) logCall('event', 'offline', { sec: Math.round(num(off.seconds)), gold: Math.round(num(off.gold)) });
+    try { if (HOARD._runReady) HOARD._runReady(getState); } catch (e) { log(e); }
 
     if (off && num(off.seconds) >= OFFLINE_MODAL_MIN) {
       try { HOARD.ui.welcome(off); } catch (e) { log(e); }

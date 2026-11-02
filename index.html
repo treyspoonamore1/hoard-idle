@@ -113,6 +113,10 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 .chip.legend { color: var(--r-epic); border-color: rgba(194, 124, 255, 0.45); }
 .chip.frenzy { color: #fff1e0; background: #6d2a17; border-color: var(--ember); }
 .chip.ember { color: #ffd2b8; background: #4a2318; border-color: rgba(232, 99, 58, 0.6); }
+/* module chips (HOARD.ui.addChip); pressable ones get a larger invisible hit area */
+.chip.press { position: relative; font-family: inherit; cursor: pointer; touch-action: manipulation; }
+.chip.press::after { content: ""; position: absolute; inset: -10px -4px; }
+.chip.press:active { filter: brightness(1.15); }
 
 /* ---------------------------------------------------------------- cave band */
 #caveband {
@@ -289,6 +293,10 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 .btn.danger { background: #5a2416; color: #ffd8c8; border-color: var(--ember); }
 .btn.ghost { background: transparent; }
 .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+/* row extras (HOARD.ui.addRowExtra): a slot at the bottom of each Lair/Brood row */
+.row-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.row-extras:empty { display: none; }
+.row-extras .toggle-row { min-height: 0; border-bottom: 0; gap: 8px; font-size: 14px; color: var(--ink-dim); }
 .btn-row .btn { flex: 1 1 0; }
 
 .seg { display: flex; gap: 0; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; }
@@ -432,6 +440,9 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 }
 .badge.dot { min-width: 10px; width: 10px; height: 10px; padding: 0; top: 8px; left: calc(50% + 9px); background: var(--gold); }
 .badge[hidden] { display: none; }
+#tabs .t-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
+#tabs[data-n="6"] button, #tabs[data-n="7"] button { font-size: 12px; letter-spacing: -0.01em; }
+#tabs[data-n="6"] button.on::before, #tabs[data-n="7"] button.on::before { left: 16%; right: 16%; }
 
 /* ---------------------------------------------------------------- modal + sheets */
 #overlay {
@@ -458,6 +469,13 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
   animation: sheet-up 0.22s ease-out;
 }
+.sheet.full { height: 92%; max-height: 92%; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.sheet-head h3 { margin: 0; }
+.settings-sheet .set-row:empty { display: none; }
+.settings-sheet .hint.ver { margin: 16px 0 0; text-align: center; }
+.toggle-row .tl { display: flex; flex-direction: column; min-width: 0; }
+.toggle-row .tl small { font-size: 13px; }
 #overlay.center .sheet {
   width: calc(100% - 32px);
   max-width: 440px;
@@ -560,34 +578,22 @@ html.rm *, html.rm *::before, html.rm *::after { animation: none !important; tra
 
   <main id="panel" tabindex="-1"></main>
 
-  <nav id="tabs" aria-label="Sections">
-    <button type="button" data-tab="lair" class="on">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 20V12a9 9 0 0 1 18 0v8z"/><path d="M8 20v-5a4 4 0 0 1 8 0v5"/></svg>
-      Lair<span class="badge dot" data-badge="lair" hidden></span>
-    </button>
-    <button type="button" data-tab="brood">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3c3.6 0 6.5 5.2 6.5 9.6A6.5 6.5 0 0 1 5.5 12.6C5.5 8.2 8.4 3 12 3z"/><path d="M9 11l1.6 1.4L12 10.6l1.5 1.8L15 11" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Brood<span class="badge" data-badge="brood" hidden></span>
-    </button>
-    <button type="button" data-tab="quests">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 21V4"/><path d="M6 4h11l-2.5 4L17 12H6"/></svg>
-      Quests<span class="badge" data-badge="quests" hidden></span>
-    </button>
-    <button type="button" data-tab="hoard">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M7 4h10l4 5-9 11L3 9z"/><path d="M3 9h18M9.5 4L12 9l2.5-5M12 9v11"/></svg>
-      Hoard<span class="badge" data-badge="hoard" hidden></span>
-    </button>
-    <button type="button" data-tab="sleep">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></svg>
-      Sleep<span class="badge dot" data-badge="sleep" hidden></span>
-    </button>
-  </nav>
+  <nav id="tabs" aria-label="Sections"></nav>
 </div>
 
 <div id="overlay" role="dialog" aria-modal="true"></div>
 
 <script src="js/data.js"></script>
 <script src="js/engine.js"></script>
+<script src="js/lore.js"></script>
+<script src="js/events.js"></script>
+<script src="js/ember.js"></script>
+<script src="js/log.js"></script>
+<script src="js/sound.js"></script>
 <script src="js/cave.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/ui-lore.js"></script>
+<script src="js/ui-events.js"></script>
+<script src="js/ui-ember.js"></script>
+<script src="js/ui-stats.js"></script>
 <script src="js/main.js"></script>

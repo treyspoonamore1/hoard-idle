@@ -11,8 +11,10 @@
 
   if (typeof document === 'undefined') {
     // Node / headless sim: harmless no-op API.
-    cave.init = cave.frame = cave.resize = cave.gust = function () {};
+    cave.init = cave.frame = cave.resize = cave.gust = cave.addLayer = cave.removeLayer = cave.addSfxHook = cave.float = cave.burst = function () {};
     cave.streak = function () { return 1; };
+    cave.anchor = function () { return { x: 0, y: 0, cx: 0, cy: 0 }; };
+    cave.metrics = function () { return null; };
     return;
   }
 
@@ -59,7 +61,7 @@
   var parts = [], partCount = 0;
   for (i0 = 0; i0 < MAX_PARTS; i0++) parts.push({ on: false, k: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, s: 1, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, rot: 0 });
   var floats = [];
-  for (i0 = 0; i0 < MAX_FLOATS; i0++) floats.push({ on: false, x: 0, y: 0, txt: '', life: 0, max: 1, big: false });
+  for (i0 = 0; i0 < MAX_FLOATS; i0++) floats.push({ on: false, x: 0, y: 0, txt: '', life: 0, max: 1, big: false, col: '' });
   var dust = [];
   for (i0 = 0; i0 < DUST_N; i0++) dust.push({ x: 0, y: 0, s: 1, ph: 0, sp: 1 });
   var tX = new Float32Array(TRAIL_N), tY = new Float32Array(TRAIL_N), tT = new Float64Array(TRAIL_N), tB = new Uint8Array(TRAIL_N);
@@ -83,6 +85,29 @@
   // dragon + fx
   var blinkT = 3, blinkA = 0, lookX = 0, lookY = 0, wingA = 0, hopT = 0, smokeT = 5;
   var shakeT = 0, flashA = 0, pileBump = 0, glintT = 0;
+
+  // ---------------------------------------------------------------- extension hooks (SPEC-V2 0.4, EXTENSIONS.md)
+  var layers = [];      // { id, z, draw(ctx, w, h, t, dt, state), _err }
+  var sfxHooks = [];    // fn(name, data)
+  var frameDt = 0, stRamp = 1;
+  function sfx(name, data) {
+    for (var i = 0; i < sfxHooks.length; i++) {
+      try { sfxHooks[i](name, data); } catch (e) { /* a sound bug must never break swiping */ }
+    }
+  }
+  function drawLayers(front) {
+    for (var i = 0; i < layers.length; i++) {
+      var L = layers[i];
+      if ((L.z >= 0) !== front || L._err >= 5) continue;
+      ctx.save();
+      try { L.draw(ctx, W, H, clock, frameDt, S); } catch (e) {
+        L._err = (L._err || 0) + 1;
+        if (L._err === 1) { try { console.error('[HOARD] cave layer ' + L.id, e); } catch (e2) { /* ignore */ } }
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    }
+  }
 
   // ---------------------------------------------------------------- helpers
   function num(v, fb) { return (typeof v === 'number' && isFinite(v)) ? v : fb; }
@@ -564,8 +589,9 @@
       for (i = 1; i < MAX_FLOATS; i++) if (floats[i].life < f.life) f = floats[i];
     }
     f.on = true; f.x = clamp(x, 34, W - 34); f.y = clamp(y, 24, H - 10); f.txt = '+' + fmtNum(g);
-    f.max = big ? 1.6 : 1.05; f.life = f.max; f.big = !!big;
-    if (typeof cave.onFloat === 'function') { try { cave.onFloat(g, x, y); } catch (e) { /* ignore */ } }
+    f.max = big ? 1.6 : 1.05; f.life = f.max; f.big = !!big; f.col = '';
+    if (typeof cave.onFloat === 'function' && g > 0) { try { cave.onFloat(g, x, y); } catch (e) { /* ignore */ } }
+    return f;
   }
   function addGain(acc, g, x, y) {
     if (!(g > 0)) return;
@@ -686,7 +712,7 @@
     var inst = dt > 0 ? frameMove / dt : 0;
     frameMove = 0;
     spd += (inst - spd) * Math.min(1, dt * 12);
-    if (down && spd >= ST_MIN_SPEED) { stkT += dt; stillT = 0; decayT = 0; }
+    if (down && spd >= ST_MIN_SPEED) { stkT += dt * stRamp; stillT = 0; decayT = 0; }
     else {
       stillT += dt;
       if (!down || stillT > ST_DECAY) {
@@ -704,6 +730,7 @@
     if (ni > stkIdx) {
       var m = multFor(ni);
       eCall('noteStreak', m);
+      sfx('streakUp', { mult: m });
       buzz(10);
       stkPulse = 1;
       if (fx >= 0) sparks(fx, fy, 10, 260, P_STAR);
@@ -825,6 +852,7 @@
       spawnPart(P_LINE, x + Math.cos(a) * 14, y + Math.sin(a) * 14, Math.cos(a) * v, Math.sin(a) * v, 0.3 + Math.random() * 0.15, 1);
     }
     sparks(x, y, 14, 380, P_STAR);
+    sfx('gust', { n: n });
     wingA = 1; flashA = rm ? 0.12 : 0.32;
     if (!rm) shakeT = 0.32;
     buzz(15);
@@ -852,6 +880,7 @@
     bn.title = (res && typeof res.title === 'string') ? res.title : 'Treasure!';
     bn.text = (res && typeof res.text === 'string') ? res.text : '';
     bn.life = bn.max;
+    sfx('treasure', { kind: res && typeof res.kind === 'string' ? res.kind : '' });
     if (g1 > g0) spawnFloat(tr.x, tr.y - 30, g1 - g0, true);
     if (res && res.spawnCoins > 0) {
       swarmLeft += Math.min(200, Math.floor(res.spawnCoins)); swarmX = clamp(tr.x, 20, W - 20); swarmY = tr.y;
@@ -1235,7 +1264,7 @@
       g.lineWidth = f.big ? 5 : 3.5;
       g.strokeStyle = 'rgba(22,12,6,0.8)';
       g.strokeText(f.txt, 0, 0);
-      g.fillStyle = f.big ? C.goldHi : C.gold;
+      g.fillStyle = f.col || (f.big ? C.goldHi : C.gold);
       g.fillText(f.txt, 0, 0);
       g.restore();
     }
@@ -1373,6 +1402,7 @@
     g.translate(W * 0.5, baseY); g.scale(1 + pileBump * 0.012, bump);
     g.drawImage(pileCv, -pileOx, -pileOy, pileCw, pileCh);
     g.restore();
+    if (layers.length) drawLayers(false); // z < 0: behind the dragon, in front of the hoard
     if (kob.on) drawKobold();
     drawDragon(W * 0.5, peakY() + 4 * dk, dk);
     drawCoins();
@@ -1381,6 +1411,7 @@
     g.globalCompositeOperation = 'lighter';
     drawParts(true);
     g.globalCompositeOperation = 'source-over';
+    if (layers.length) drawLayers(true); // z >= 0: in front of dragon, coins and particles
     drawTrail();
     drawFloats();
     drawStreak();
@@ -1408,6 +1439,7 @@
     st.sweepRate = Math.max(0, num(s.sweepRate, 0));
     st.gustWorthMult = num(s.gustWorthMult, 3) || 3;
     st.maxStreak = num(s.maxStreak, 5) || 5;
+    stRamp = clamp(num(s.streakRamp, 1), 0.1, 100);
     st.emberActive = !!s.emberActive;
     st.frenzyActive = !!s.frenzyActive;
     var ti = s.treasureInterval;
@@ -1425,6 +1457,7 @@
       if (pendN > 0) {
         var g = eNum('coinCollected', pendN, mult, pendV / pendN);
         addGain(gA, g, gainX, gainY);
+        sfx('coin', { n: pendN, streak: mult });
         pendN = 0; pendV = 0;
       }
       if (strokePx >= STROKE_STEP) {
@@ -1490,6 +1523,7 @@
     if (!(dt > 0)) dt = 0;
     if (dt > 0.1) dt = 0.1;
     clock += dt;
+    frameDt = dt;
     var s = null;
     try { s = getState ? getState() : null; } catch (e) { s = null; }
     S = (s && typeof s === 'object') ? s : null;
@@ -1508,4 +1542,60 @@
     return doGust(W * 0.5, peakY() - 40 * dk);
   };
   cave.streak = function () { return streakMult(); };
+
+  // ---- v2 hooks
+  cave.addLayer = function (def) {
+    if (!def || typeof def.id !== 'string' || typeof def.draw !== 'function') return false;
+    var L = { id: def.id, z: num(+def.z, 1), draw: def.draw, _err: 0 };
+    for (var i = 0; i < layers.length; i++) if (layers[i].id === L.id) { layers.splice(i, 1); break; }
+    layers.push(L);
+    layers.sort(function (a, b) { return a.z - b.z; });
+    return true;
+  };
+  cave.removeLayer = function (id) {
+    for (var i = 0; i < layers.length; i++) if (layers[i].id === id) { layers.splice(i, 1); return true; }
+    return false;
+  };
+  cave.addSfxHook = function (fn) {
+    if (typeof fn !== 'function' || sfxHooks.indexOf(fn) >= 0) return false;
+    sfxHooks.push(fn);
+    return true;
+  };
+  // named points in canvas-local CSS px (x, y) plus viewport coordinates (cx, cy)
+  cave.anchor = function (name) {
+    var x = W * 0.5, y = H * 0.5;
+    if (name === 'hoard') { x = W * 0.5; y = peakY() + pileH * 0.35; }
+    else if (name === 'dragon') { x = W * 0.5 + 41 * dk; y = peakY() - 60 * dk; }
+    else if (name === 'floor') { x = W * 0.5; y = baseY; }
+    else if (name === 'nookL') { x = Math.max(36, W * 0.13); y = baseY - 6 * dk; }
+    else if (name === 'nookR') { x = Math.min(W - 36, W * 0.87); y = baseY - 6 * dk; }
+    else if (name === 'streak') { x = 30; y = 30; }
+    else if (name === 'finger') { if (down && fx >= 0) { x = fx; y = fy; } }
+    else if (name === 'gustBtn') {
+      try {
+        var gb = document.getElementById('gust');
+        if (gb && canvas) {
+          var a = gb.getBoundingClientRect(), r = canvas.getBoundingClientRect();
+          x = a.left + a.width * 0.5 - r.left; y = a.top + a.height * 0.5 - r.top;
+        }
+      } catch (e) { /* ignore */ }
+    }
+    var cx = x, cy = y;
+    try { if (canvas) { var rr = canvas.getBoundingClientRect(); cx = rr.left + x; cy = rr.top + y; } } catch (e) { /* ignore */ }
+    return { x: x, y: y, cx: cx, cy: cy };
+  };
+  cave.metrics = function () {
+    return { w: W, h: H, dpr: dpr, unit: unit, dk: dk, baseY: baseY, peakY: peakY(), pileW: pileW, pileH: pileH, coinR: coinR, reducedMotion: rm, inited: inited };
+  };
+  // floating label like the gold numbers (text is drawn as given; color optional)
+  cave.float = function (x, y, text, big, color) {
+    if (!inited) return;
+    var f = spawnFloat(num(+x, W * 0.5), num(+y, H * 0.5), 0, !!big);
+    if (f) { f.txt = String(text); f.col = typeof color === 'string' ? color : ''; }
+  };
+  // a burst of particles: kind 'star' (default) | 'spark'
+  cave.burst = function (x, y, n, kind) {
+    if (!inited) return;
+    sparks(num(+x, W * 0.5), num(+y, H * 0.5), clamp(Math.floor(num(+n, 10)), 1, 40), 260, kind === 'spark' ? P_SPARK : P_STAR);
+  };
 })();
