@@ -33,7 +33,6 @@
   var voices = 0, dropped = 0, played = {}, last = {};
   var appliedVol = -1;
   var hidden = false;
-  var uiDown = false, uiUpAt = -1e9;   // pointer held on the panels (hold-to-buy) -> buy sounds are the player's
   var chestQ = null;
   var lvl = 1;                 // per-sound loudness trim, applied to every voice of the sound being played
   // trims measured by rendering each sound offline (tools: OfflineAudioContext): at 40% volume the loud,
@@ -441,19 +440,15 @@
     if (auto) chestQ.auto = true;
     if (Array.isArray(cards)) chestQ.cards = chestQ.cards.concat(cards.slice(0, 50));
   }
-  function playerBuying() {
-    var t = Date.now();
-    return uiDown || t - uiUpAt < 450;
-  }
   var wired = false;
   function wireEngine() {
     var E = HOARD.engine;
     if (wired || !E || typeof E.on !== 'function') return;
     wired = true;
-    E.on('buy', function (d) { if (playerBuying()) play('buy', d); });   // auto-buyers stay silent
+    E.on('buy', function (d) { if (d && !d.auto && !(E.inAuto && E.inAuto())) play('buy', d); });   // auto-buyers stay silent
     E.on('rank', function () { play('rank'); });
     E.on('sleep', function () { play('sleep'); });
-    E.on('chest', function (cards) { chestEvent(cards, false); });
+    E.on('chest', function (cards) { chestEvent(cards, !!(E.inAuto && E.inAuto())); });   // Chest Kobold: quiet
     E.on('lore', function (d) { play('lore', d); });
     E.on('myth', function () { play('myth'); });
     E.on('ember', function (d) {
@@ -473,31 +468,17 @@
     if (name === 'coin' || name === 'streakUp' || name === 'gust' || name === 'treasure') play(name, d);
   }
   function wireCave() {
-    var C = HOARD.cave, E = HOARD.engine;
-    if (C && typeof C.addSfxHook === 'function') { C.addSfxHook(caveHook); return true; }
-    // fallback without the cave hook: engine events (no streak pitch)
-    if (E && E.on) {
-      E.on('coin', function (n) { play('coin', { n: n, streak: 1 }); });
-      E.on('gust', function () { play('gust'); });
-      E.on('treasure', function (r) { play('treasure', r); });
-    }
-    return false;
+    var C = HOARD.cave;
+    if (!C || typeof C.addSfxHook !== 'function') return false;
+    C.addSfxHook(caveHook);
+    return true;
   }
   function wireDom() {
     if (!hasDom) return;
-    var gesture = function (e) {
-      unlock();
-      if (e && e.type === 'pointerdown') {
-        var tg = e.target;
-        uiDown = !(tg && tg.id === 'cave');
-      }
-    };
-    var up = function () { if (uiDown) { uiDown = false; uiUpAt = Date.now(); } };
+    var gesture = function () { unlock(); };
     document.addEventListener('pointerdown', gesture, true);
     document.addEventListener('keydown', gesture, true);
     document.addEventListener('touchend', function () { unlock(); }, true);   // iOS unlocks on touchend
-    document.addEventListener('pointerup', up, true);
-    document.addEventListener('pointercancel', up, true);
     var vis = function () {
       hidden = !!document.hidden;
       if (hidden) suspend();
@@ -596,7 +577,7 @@
       setState: function (fn) { getState = fn; },
       setHidden: function (h) { hidden = !!h; if (hidden) suspend(); },
       chestEvent: chestEvent,
-      setPlayerBuying: function (v) { uiDown = !!v; if (!v) uiUpAt = -1e9; }
+      caveHook: caveHook
     }
   };
   HOARD.sound = SND;

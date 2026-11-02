@@ -14,7 +14,7 @@
   function fmt(n) { return HOARD.fmt(n); }
   function num(x, d) { x = +x; return isFinite(x) ? x : (d || 0); }
   function plural(n, a, b) { return ui.plural ? ui.plural(n, a, b) : (n === 1 ? a : b); }
-  function S() { return ui.state ? ui.state() : HOARD.state; }
+  function S() { return ui.state(); }
 
   // "2d 14h" / "6h 12m" / "12m" / "40s"
   function span(sec) {
@@ -342,7 +342,7 @@
         patches.push(function (st) {
           var k = sec.key(st);
           if (k !== sec.k) {
-            var sc = sheetScroller(), top = sc ? sc.scrollTop : 0;
+            var sc = ui.sheetEl(), top = sc ? sc.scrollTop : 0;
             sec.k = k; h.innerHTML = '';
             sec.patch = sec.build(h, st);
             if (sc) sc.scrollTop = top;
@@ -386,7 +386,6 @@
     return { node: root, key: viewKey(s), patch: function (st) { for (var i = 0; i < patches.length; i++) patches[i](st); } };
   }
   function viewKey(s) { var inf = X.info(s); return inf.status + ':' + (inf.synced ? s.events.id : '') + ':' + (s.events.over ? 1 : 0); }
-  function sheetScroller() { return document.querySelector('#overlay .sheet.ev-sheet'); }
 
   var sheetView = null, sheetTheme = '';
   function openLair() {
@@ -398,7 +397,7 @@
     sheetView = buildLairView(s);
     host.appendChild(sheetView.node);
     sheetTheme = themeOf(X.info(s));
-    ui.sheet(host, {
+    var sheetNode = ui.sheet(host, {
       full: true, cls: 'ev-sheet ' + sheetTheme,
       onClose: function () { sheetView = null; reveal = null; },
       onAbort: function () { sheetView = null; },
@@ -408,8 +407,8 @@
           sheetView = buildLairView(st);
           host.innerHTML = '';
           host.appendChild(sheetView.node);
-          var t = themeOf(X.info(st)), sh = sheetScroller();
-          if (sh && t !== sheetTheme) { sh.classList.remove(sheetTheme); sh.classList.add(t); sheetTheme = t; }
+          var t = themeOf(X.info(st));
+          if (sheetNode && t !== sheetTheme) { sheetNode.classList.remove(sheetTheme); sheetNode.classList.add(t); sheetTheme = t; }
         }
         sheetView.patch(st);
       }
@@ -418,16 +417,12 @@
   function patchSheetSoon() { if (ui.markDirty) ui.markDirty(); }
 
   // ---------------------------------------------------------------- top-bar chip
-  var chipEl = null, chipTheme = '';
   ui.addChip({
     id: 'events', order: 50, cls: 'ev-chip',
     visible: function (s) { return X.unlocked(s); },
+    classes: function (s) { return themeOf(X.info(s)) + (X.anyClaim(s) ? ' ev-claim' : ''); },
     text: function (s) {
       var inf = X.info(s);
-      if (!chipEl || !chipEl.isConnected) chipEl = document.querySelector('[data-chip="events"]');
-      var t = themeOf(inf);
-      if (chipEl && t !== chipTheme) { if (chipTheme) chipEl.classList.remove(chipTheme); chipEl.classList.add(t); chipTheme = t; }
-      if (chipEl) setCls(chipEl, 'ev-claim', X.anyClaim(s));
       noteOffline(s);
       if (inf.status === 'active') return inf.lair.name + ' · ' + span(inf.left);
       return 'Next lair in ' + span(inf.untilNext);

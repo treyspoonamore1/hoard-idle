@@ -10,6 +10,8 @@
   var fmt = HOARD.fmt, el = ui.el, add = ui.add, setText = ui.setText, setCls = ui.setCls, setHidden = ui.setHidden;
 
   function num(x, d) { x = +x; return isFinite(x) ? x : (d || 0); }
+  // multiplier text: 1.25 / 32.0K (multStr would print 32001 or 1e+30)
+  function mx(m) { m = num(m, 1); return m >= 1000 ? fmt(m) : ui.multStr(m); }
   function legendWord(n) { return Math.floor(num(n)) === 1 ? 'Legend' : 'Legend'; }
   var ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV', 'XV'];
   function roman(n) { return ROMAN[n] || String(n); }
@@ -18,7 +20,7 @@
     '.lore-head { background: linear-gradient(160deg, #2f2346 0%, var(--rock) 60%, #1d1927 100%); border-color: rgba(194,124,255,0.35); }',
     '.lore-head .lore-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }',
     '.lore-head .lore-pts { font-family: var(--font-d); font-size: 44px; line-height: 0.95; color: var(--r-epic); font-variant-numeric: tabular-nums; }',
-    '.lore-head .lore-pts-l { color: var(--ink-dim); font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }',
+    '.lore-head .lore-pts-l { color: var(--ink-dim); font-size: 14px; font-weight: 700; letter-spacing: 0.04em; margin-bottom: 4px; }',
     '.lore-head .lore-mult { text-align: right; color: var(--ink-dim); font-size: 14px; line-height: 1.35; font-variant-numeric: tabular-nums; }',
     '.lore-head .lore-mult b { color: var(--ink); }',
     '.lore-head .lore-go { margin-top: 10px; }',
@@ -56,16 +58,7 @@
   // ================================================================ helpers
   function S() { return ui.state(); }
   function branchNodes(b) { return L.nodes.filter(function (n) { return n.branch === b; }); }
-  function scrollToSec(id) {
-    try {
-      var n = document.querySelector('[data-sec="legend.' + id + '"]');
-      if (n && n.scrollIntoView) n.scrollIntoView({ block: 'start', behavior: ui.reducedMotion() ? 'auto' : 'smooth' });
-    } catch (e) { /* ignore */ }
-  }
-  function goLore() {
-    ui.setTab('legend');
-    setTimeout(function () { scrollToSec(firstLoreSec()); }, 60);
-  }
+  function goLore() { ui.scrollToSection('legend', firstLoreSec()); }
   function firstLoreSec() { return 'lore-' + L.branches[0].id; }
   // throttled purchase toast (hold-to-buy repeats would flood the queue)
   var lastToast = { id: '', t: 0 };
@@ -199,7 +192,7 @@
       add(right, r1, r2, r3);
       add(top, left, right);
       c.appendChild(top);
-      var go = ui.button('wide lore-go', 'Spend it on Lore', function () { scrollToSec(firstLoreSec()); });
+      var go = ui.button('wide lore-go', 'Spend it on Lore', function () { goLore(); });
       c.appendChild(go);
       var master = null;
       if (L.anyAutoOwned(s)) {
@@ -211,9 +204,9 @@
         setText(pts, fmt(st.legendPts));
         var r1h = 'Earned this Myth <b>' + fmt(st.legend) + '</b>';
         if (r1._h !== r1h) { r1._h = r1h; r1.innerHTML = r1h; }
-        setText(r2, 'Passive ×' + ui.multStr(stats.legendMult) + ' to everything');
+        setText(r2, 'Passive ×' + mx(stats.legendMult) + ' to everything');
         setHidden(r3, !(num(st.myth) > 0));
-        if (num(st.myth) > 0) setText(r3, 'Myth ' + fmt(st.myth) + ': gold ×' + ui.multStr(L.mythMult(st)));
+        if (num(st.myth) > 0) setText(r3, 'Myth ' + fmt(st.myth) + ': gold ×' + mx(L.mythMult(st)));
         var n = L.affordableCount(st);
         setHidden(go, n < 1);
         setCls(go, 'can', n > 0);
@@ -281,7 +274,7 @@
         setText(big, can ? '+' + fmt(L.mythOnAscend(s)) : '0');
         setCls(btn, 'can', can);
         ui.setDis(btn, !can);
-        setText(k1, fmt(s.myth) + '  (gold ×' + ui.multStr(L.mythMult(s)) + ')');
+        setText(k1, fmt(s.myth) + '  (gold ×' + mx(L.mythMult(s)) + ')');
         setText(k2, fmt(s.myths));
       };
     }
@@ -290,7 +283,7 @@
     var s = S();
     if (!s || !L.canAscend(s)) return;
     var g = L.mythOnAscend(s);
-    ui.ask('Ascend into Myth?', 'You gain +' + fmt(g) + ' Myth (all gold ×' + ui.multStr(Math.pow(L.MYTH.prodPer, num(s.myth) + g)) +
+    ui.ask('Ascend into Myth?', 'You gain +' + fmt(g) + ' Myth (all gold ×' + mx(Math.pow(L.MYTH.prodPer, num(s.myth) + g)) +
       ' for good) and Myth to spend on Relics. Legend, Head start and Power Lore, gold, brood, buildings and rank start over.',
     'Ascend', 'Not yet', { danger: true }).then(function (yes) {
       if (!yes) return;
@@ -300,7 +293,7 @@
       if (got > 0) {
         ui.toast('You are a Myth.', '+' + fmt(got) + ' Myth. Spend it on Relics.', 'gold');
         ui.refresh();
-        setTimeout(function () { scrollToSec('relics'); }, 80);
+        ui.scrollToSection('legend', 'relics');
       }
     });
   }
@@ -383,18 +376,13 @@
     id: 'lore-auto', order: 50, cls: 'lore-auto',
     visible: function (s) { return L.anyAutoOwned(s); },
     text: function (s) { return L.masterOn(s) ? 'Auto' : 'Auto off'; },
-    onPress: function () {
-      ui.setTab('legend');
-      setTimeout(function () { scrollToSec('lorehead'); }, 60);
-    }
+    onPress: function () { ui.scrollToSection('legend', 'lorehead'); }
   });
 
   // ================================================================ runtime: notes, auto gust, callout
-  var est = { coins: 0, ready: 0, last: 0 };
-  E.on('coin', function (n) { est.coins = Math.max(0, est.coins - num(n)); });
-  E.on('gust', function () { est.coins = 0; est.ready = 0; });
+  var est = { ready: 0, last: 0 };
+  E.on('gust', function () { est.ready = 0; });
   E.on('sleep', function () {
-    est.coins = 0;
     var s = S();
     if (s && !E.flag(s, 'loreCallout')) callout.pending = Date.now() + 1400;
   });
@@ -402,7 +390,6 @@
     if (!x || x.relic) return;
     if (x.id === 'start_rank' || x.id === 'start_gold' || x.id === 'start_brood') ui.markDirty();
   });
-  E.on('myth', function () { est.coins = 0; });
 
   var callout = { pending: 0, checkedBoot: false };
   function showCallout() {
@@ -453,18 +440,14 @@
   }
 
   function autoGust(s, dt) {
-    if (!L.nodeOn(s, 'auto_gust') || !HOARD.cave || typeof HOARD.cave.gust !== 'function') { est.ready = 0; return; }
-    var st = E.stats(s);
-    // coins on screen: the cave does not expose a count, so estimate spill in minus coins swiped/swept/gusted
-    est.coins = Math.min(70, Math.max(0, est.coins + (num(st.spillRate) - num(st.sweepRate)) * dt));
-    var m = HOARD.cave.metrics && HOARD.cave.metrics();
-    var coins = (m && typeof m.coins === 'number') ? m.coins : est.coins;
-    if (!E.gustReady(s)) { est.ready = 0; return; }
+    var C = HOARD.cave;
+    if (!L.nodeOn(s, 'auto_gust') || !C || typeof C.gust !== 'function' || !E.gustReady(s)) { est.ready = 0; return; }
     est.ready += dt;
+    var coins = typeof C.coinCount === 'function' ? num(C.coinCount()) : 0;
     if (coins >= 8 || est.ready >= 10) {
       var okk = false;
-      try { okk = HOARD.cave.gust() !== false; } catch (e) { okk = false; }
-      if (okk) { est.coins = 0; est.ready = 0; }
+      try { okk = C.gust() !== false; } catch (e) { okk = false; }
+      if (okk) est.ready = 0;
     }
   }
 

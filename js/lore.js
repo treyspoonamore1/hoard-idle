@@ -19,10 +19,10 @@
     { id: 'power', name: 'Power', text: 'Raw strength, many levels. Reset by a Myth.' },
     { id: 'unlock', name: 'Unlocks', text: 'Open new parts of the world. Kept through a Myth.' }
   ];
-  function x(v) { return '×' + (Math.round(v * 100) / 100); }
+  function x(v) { return '×' + (v >= 1000 ? fmt(v) : String(Math.round(v * 100) / 100)); }
   var START_GOLD = [0, 500, 5e4, 5e6, 5e8];
   var START_RANK = [1, 3, 4];   // Old Renown levels; Ancestral Lair also gives RELIC_RANK
-  var RELIC_RANK = 4;
+  var RELIC_RANK = 5;
   var TALON_RAMP = [1, 1.5, 2, 2.5];
   var CLAW_IDS = ['claws1', 'claws2', 'claws3', 'claws4', 'scales1', 'scales2', 'scales3'];
   var BROOM_IDS = ['broom1', 'broom2', 'broom3'];
@@ -47,41 +47,41 @@
     { id: 'auto_sleep', branch: 'auto', name: 'Dream Keeper', costs: [30], req: 'auto_upg',
       desc: function () { return 'Optional: take the Long Sleep by itself once the Legend gain is big enough.'; } },
     // ---- Head start (reset by Myth)
-    { id: 'start_gold', branch: 'start', name: 'Buried Cache', costs: [1, 4, 25, 400],
+    { id: 'start_gold', branch: 'start', name: 'Buried Cache', costs: [1, 4, 15, 60],
       what: 'Starting gold', val: function (lv) { return fmt(START_GOLD[Math.min(4, lv)]); },
       desc: function (lv) { return 'Start each run with ' + fmt(START_GOLD[Math.min(4, lv)]) + ' gold.'; } },
-    { id: 'keep_claws', branch: 'start', name: 'Remembered Claws', costs: [6],
+    { id: 'keep_claws', branch: 'start', name: 'Remembered Claws', costs: [3],
       desc: function () { return 'Sharper Claws and Golden Scales survive the Long Sleep.'; } },
     { id: 'keep_broom', branch: 'start', name: 'Loyal Brooms', costs: [3],
       desc: function () { return 'Kobold Broom Crew upgrades survive the Long Sleep.'; } },
-    { id: 'start_rank', branch: 'start', name: 'Old Renown', costs: [5, 300],
+    { id: 'start_rank', branch: 'start', name: 'Old Renown', costs: [5, 40],
       what: 'Starting Dragon Rank', val: function (lv) { return String(START_RANK[Math.min(2, lv)]); },
       desc: function (lv) { return 'Start each run at Dragon Rank ' + START_RANK[Math.min(2, lv)] + '.'; } },
-    { id: 'start_brood', branch: 'start', name: 'Nest Egg', costs: [4, 150],
+    { id: 'start_brood', branch: 'start', name: 'Nest Egg', costs: [4, 20],
       desc: function (lv) { return lv >= 2 ? 'Start with 300 Eggs, 25 Wyrmlings, 12 Drakes and 3 Wyverns.' : 'Start each run with 300 Eggs and 25 Wyrmlings.'; } },
-    // ---- Power (reset by Myth; cost growth x2.5 per level)
-    { id: 'greed', branch: 'power', name: "Dragon's Greed", base: 1, growth: 2.5, max: 15, per: 0.25,
+    // ---- Power (reset by Myth; cost growth x4 per level)
+    { id: 'greed', branch: 'power', name: "Dragon's Greed", base: 1, growth: 4, max: 15, per: 0.25,
       what: 'Coin and stroke worth', val: function (lv) { return x(1 + this.per * lv); },
       desc: function (lv) { return 'Coins and strokes ' + x(1 + this.per * lv) + '.'; } },
-    { id: 'halls', branch: 'power', name: 'Glittering Halls', base: 2, growth: 2.5, max: 15, per: 0.5,
+    { id: 'halls', branch: 'power', name: 'Glittering Halls', base: 2, growth: 4, max: 15, per: 0.25,
       what: 'Building gold/s', val: function (lv) { return x(1 + this.per * lv); },
       desc: function (lv) { return 'Building gold/s ' + x(1 + this.per * lv) + '.'; } },
-    { id: 'clutches', branch: 'power', name: 'Fertile Clutches', base: 2, growth: 2.5, max: 15, per: 0.25,
+    { id: 'clutches', branch: 'power', name: 'Fertile Clutches', base: 2, growth: 4, max: 15, per: 0.25,
       what: 'Minion output', val: function (lv) { return x(1 + this.per * lv); },
       desc: function (lv) { return 'Minion output ' + x(1 + this.per * lv) + '.'; } },
-    { id: 'talons', branch: 'power', name: 'Steady Talons', base: 3, growth: 2.5, max: 3,
+    { id: 'talons', branch: 'power', name: 'Steady Talons', base: 3, growth: 4, max: 3,
       what: 'Streak speed', val: function (lv) { return x(TALON_RAMP[Math.min(3, lv)]); },
       desc: function (lv) { return 'Streaks build ' + x(TALON_RAMP[Math.min(3, lv)]) + ' faster; ×8 streaks always open.'; } },
-    { id: 'magpie', branch: 'power', name: 'Magpie Instinct', base: 3, growth: 2.5, max: 4,
+    { id: 'magpie', branch: 'power', name: 'Magpie Instinct', base: 3, growth: 4, max: 4,
       what: 'Treasures / Frenzy', val: function (lv) { return '+' + (25 * lv) + '% / +' + (8 * lv) + 's'; },
       desc: function (lv) { return 'Treasures +' + (25 * lv) + '% more often; Gold Frenzy +' + (8 * lv) + 's.'; } },
-    { id: 'dreams', branch: 'power', name: 'Deep Dreams', base: 6, growth: 2.5, max: 6,
+    { id: 'dreams', branch: 'power', name: 'Deep Dreams', base: 6, growth: 4, max: 6,
       what: 'Legend per Long Sleep', val: function (lv) { return '+' + (20 * lv) + '%'; },
       desc: function (lv) { return 'Legend from each Long Sleep +' + (20 * lv) + '%.'; } },
-    { id: 'watch', branch: 'power', name: 'Long Watch', base: 2, growth: 2.5, max: 4,
+    { id: 'watch', branch: 'power', name: 'Long Watch', base: 2, growth: 4, max: 4,
       what: 'Away time / gold while away', val: function (lv) { return (8 + 4 * lv) + 'h / ' + x(Math.pow(1.15, lv)); },
       desc: function (lv) { return 'Away time counts up to ' + (8 + 4 * lv) + 'h; gold while away ' + x(Math.pow(1.15, lv)) + '.'; } },
-    { id: 'bargain', branch: 'power', name: 'Kobold Haggling', base: 4, growth: 2.5, max: 5,
+    { id: 'bargain', branch: 'power', name: 'Kobold Haggling', base: 4, growth: 4, max: 5,
       what: 'Building and minion gold cost', val: function (lv) { return lv ? '-' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '%' : 'full price'; },
       desc: function (lv) { return 'Buildings and minions cost ' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '% less gold.'; } },
     // ---- Unlocks (kept through Myth: Ember stays awake, the Myth gate stays open)
@@ -91,10 +91,10 @@
       desc: function () { return 'Open the Myth: Ascend from ' + fmt(MYTH.minLegend) + ' Legend for Myth and Relics.'; } }
   ];
   var RELICS = [
-    { id: 'r_legend', name: 'Saga Stone', costs: [2, 6, 18],
+    { id: 'r_legend', name: 'Saga Stone', costs: [1, 3, 9],
       what: 'Legend gain', val: function (lv) { return x(Math.pow(2, lv)); },
       desc: function (lv) { return 'Legend gain ' + x(Math.pow(2, lv)) + '.'; } },
-    { id: 'r_start', name: 'Ancestral Lair', costs: [5],
+    { id: 'r_start', name: 'Ancestral Lair', costs: [2],
       desc: function () { return 'Each run starts at Dragon Rank ' + RELIC_RANK + ' with 10 of every unlocked building.'; } },
     { id: 'r_keep', name: 'Unfading Lore', costs: [3],
       desc: function () { return 'Keep a quarter of your Power lore levels through each Ascend.'; } },
@@ -105,10 +105,12 @@
     { id: 'r_time', name: 'Timeless Sleep', costs: [4],
       desc: function () { return 'Away time counts 12h longer, and gold while away ×2.'; } }
   ];
-  // Ascend needs need = minLegend x grow^myths Legend this Myth. Myth gained = 1 + floor(log_step(legend / need)):
-  // +1 at the requirement and +1 more for every x`step` beyond it. (A sqrt(legend) gain feeds back into
-  // 1.5^myth production and runs away double-exponentially, so the gain is logarithmic.)
-  var MYTH = { gate: 'myth_gate', minLegend: 1000, grow: 4, step: 3, prodPer: 1.5, goldOnly: true };
+  // Myth: available with The First Myth learned and Legend this Myth >= need, need = minLegend x grow^Ascends.
+  //   formula 'log'  (default): gained = 1 + floor(log_step(legend / need))  (+1 at the need, +1 per x`step` beyond)
+  //   formula 'sqrt' (SPEC-V2 literal with need 150, k 3.75): gained = floor(sqrt(legend * k / need))
+  // The Legend economy is super-linear late in a Myth (Legend gain grows with Legend), so a sqrt Myth gain
+  // would feed 1.5^myth back into it and run away; the log gain keeps each Ascend worth a few Myth.
+  var MYTH = { gate: 'myth_gate', formula: 'log', minLegend: 1e5, grow: 30, step: 3, k: 3.75, prodPer: 1.5, goldOnly: true };
 
   var NIDX = {}, RIDX = {};
   NODES.forEach(function (n) { n.max = n.costs ? n.costs.length : n.max; NIDX[n.id] = n; });
@@ -138,7 +140,7 @@
     if (id === 'wake_ember') s.lore.wake_ember = 1;
     applyNow(s, id, nl);
     E.dirty();
-    E.emit('lore', { id: id, level: nl });
+    E.emit('lore', { id: id, level: nl }, s);
     return true;
   }
   function relicCost(s, id) { var d = RIDX[id]; return d ? costAt(d, rlv(s, id)) : null; }
@@ -152,7 +154,7 @@
     s.relics[id] = rlv(s, id) + 1;
     if (id === 'r_start') applyNow(s, id, 1);
     E.dirty();
-    E.emit('lore', { id: id, level: s.relics[id], relic: true });
+    E.emit('lore', { id: id, level: s.relics[id], relic: true }, s);
     return true;
   }
   function anyAffordable(s) {
@@ -252,13 +254,16 @@
     if (!s) return 0;
     var need = mythNeed(s), l = pos(s.legend);
     if (!(l >= need) || !(need > 0)) return 0;
-    var g = (1 + Math.floor(Math.log(l / need) / Math.log(MYTH.step) + 1e-9)) * mythGainMult(s);
+    var g = MYTH.formula === 'sqrt' ? Math.floor(Math.sqrt(l * MYTH.k / need) + 1e-9)
+      : 1 + Math.floor(Math.log(l / need) / Math.log(MYTH.step) + 1e-9);
+    g = Math.max(1, g) * mythGainMult(s);
     return Math.max(0, Math.min(1e6, fin(g, 0)));
   }
   // Legend at which the Ascend would give one more Myth
   function mythNextAt(s) {
-    var g = mythOnAscend(s);
-    return mythNeed(s) * Math.pow(MYTH.step, Math.max(0, g));
+    var g = Math.max(0, mythOnAscend(s)), need = mythNeed(s);
+    if (MYTH.formula === 'sqrt') return Math.max(need, need * (g + 1) * (g + 1) / MYTH.k);
+    return need * Math.pow(MYTH.step, g);
   }
   function mythGated(s) { return lv(s, MYTH.gate) > 0; }
   function canAscend(s) { return !!s && mythGated(s) && pos(s.legend) >= mythNeed(s) && mythOnAscend(s) >= 1; }
@@ -283,7 +288,7 @@
     s.myths = Math.floor(pos(s.myths)) + 1;
     E.resetRun(s, 'ascend');
     E.dirty();
-    E.emit('myth', gained);
+    E.emit('myth', gained, s);
     return gained;
   }
   function mythMult(s) { return Math.pow(MYTH.prodPer, Math.max(0, Math.min(1500, fin(s && s.myth, 0)))); }
@@ -314,13 +319,12 @@
   }
   function tierAutoOn(s, i) { return nodeOn(s, 'auto_brood') && keyOn(s, 't:' + i); }
 
-  var inAuto = 0, lastManual = -1e9, lastManualState = null, acc = 0, broodBudget = 0, budgetState = null;
+  var lastManual = -1e9, lastManualState = null, acc = 0, broodBudget = 0, budgetState = null;
   var notes = [];
   function note(kind, data) { notes.push({ kind: kind, data: data }); if (notes.length > 20) notes.shift(); }
-  E.on('buy', function () {
-    if (inAuto) return;
-    var s = HOARD.state;
-    if (!s) return;
+  // a buy by the player (not inside E.automated) pauses the auto-buyers for 1.5 s on that state
+  E.on('buy', function (d, s) {
+    if ((d && d.auto) || E.inAuto() || !s) return;
     lastManual = fin(s.time, 0); lastManualState = s;
   });
 
@@ -446,22 +450,22 @@
   // one automation pass; returns the number of actions
   function runAuto(s, dt, offline) {
     if (!s || !masterOn(s) || !anyAutoOwned(s)) return 0;
+    return E.automated(function () { return autoPass(s, dt, offline); });
+  }
+  function autoPass(s, dt, offline) {
     var did = 0;
-    inAuto++;
-    try {
-      if (nodeOn(s, 'auto_quest')) did += autoQuests(s);
-      if (nodeOn(s, 'auto_chest')) did += autoChests(s);
-      var manualRecent = !offline && lastManualState === s && fin(s.time, 0) - lastManual < 1.5 && fin(s.time, 0) >= lastManual;
-      if (!manualRecent) {
-        if (nodeOn(s, 'auto_upg')) did += autoUpgrades(s);
-        did += autoBuildings(s, offline);
-        if (nodeOn(s, 'auto_brood')) did += autoBrood(s, dt, offline);
-      }
-      if (wantsAutoSleep(s)) {
-        var g = E.sleep(s);
-        if (g > 0) { did++; note('sleep', { gained: g, offline: !!offline }); }
-      }
-    } finally { inAuto--; }
+    if (nodeOn(s, 'auto_quest')) did += autoQuests(s);
+    if (nodeOn(s, 'auto_chest')) did += autoChests(s);
+    var manualRecent = !offline && lastManualState === s && fin(s.time, 0) - lastManual < 1.5 && fin(s.time, 0) >= lastManual;
+    if (!manualRecent) {
+      if (nodeOn(s, 'auto_upg')) did += autoUpgrades(s);
+      did += autoBuildings(s, offline);
+      if (nodeOn(s, 'auto_brood')) did += autoBrood(s, dt, offline);
+    }
+    if (wantsAutoSleep(s)) {
+      var g = E.sleep(s);
+      if (g > 0) { did++; note('sleep', { gained: g, offline: !!offline }); }
+    }
     return did;
   }
   E.addTickHook('lore', function (s, dt, isOffline) {
@@ -481,6 +485,7 @@
     relics: RELICS,
     MYTH: MYTH,
     START_GOLD: START_GOLD,
+    START_RANK: START_RANK,
     node: function (id) { return NIDX[id] || null; },
     relic: function (id) { return RIDX[id] || null; },
     level: lv,

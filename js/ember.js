@@ -162,11 +162,19 @@
     return n;
   }
 
-  // swiping feeds Ember: engine 'coin' events (cave batches per frame; gust coins too) are counted here and
-  // credited to the state in the next tick, so this module never holds on to a state object
-  var pendingCoins = 0, pendingTreasures = 0, coinGainAcc = 0;
-  E.on('coin', function (n) { n = pos(n); if (n > 0 && n < 1e9) pendingCoins += n; });
-  E.on('treasure', function () { pendingTreasures++; });
+  // swiping feeds Ember: the engine's 'coin' event carries the state the coins were collected in (gust coins
+  // too), so embers are credited at once. coinGainAcc only feeds the UI's subtle cave float.
+  var coinGainAcc = 0;
+  E.on('coin', function (n, s) {
+    n = pos(n);
+    if (!(n > 0) || n >= 1e9 || !s || !isAwake(s)) return;
+    coinGainAcc = cl(coinGainAcc + addEmbers(s, n * coinYield(s), 'coin'));
+  });
+  // Ember Treasures: a grabbed treasure also gives 60s of kiln production
+  E.on('treasure', function (res, s) {
+    if (!s || !isAwake(s) || !has(sub(s), 'etreas')) return;
+    addEmbers(s, rate(s) * C.treasureSec, 'treasure');
+  });
   // LORE emits 'lore' {id:'wake_ember'}; the tick hook wakes Ember on the next frame anyway
 
   function wake(s) {
@@ -176,13 +184,12 @@
     em.wokeAt = pos(s.time);
     addEmbers(s, C.wakeGift, 'gift');
     E.dirty();
-    if (!E.isQuiet || !E.isQuiet()) E.emit('ember', { type: 'wake' });
+    if (!E.isQuiet || !E.isQuiet()) E.emit('ember', { type: 'wake' }, s);
     return true;
   }
 
   E.addTickHook('ember', function (s, dt, isOffline) {
     if (!isAwake(s)) {
-      pendingCoins = 0; pendingTreasures = 0;
       if (loreWants(s)) wake(s); else return;
     }
     var em = sub(s);
@@ -196,15 +203,6 @@
       return;
     }
     if (r > 0 && dt > 0) addEmbers(s, r * dt, 'kiln');
-    if (pendingCoins > 0) {
-      var c = pendingCoins * coinYield(s);
-      pendingCoins = 0;
-      coinGainAcc += addEmbers(s, c, 'coin');
-    }
-    if (pendingTreasures > 0) {
-      if (has(em, 'etreas')) addEmbers(s, pendingTreasures * r * C.treasureSec, 'treasure');
-      pendingTreasures = 0;
-    }
   });
 
   // Long Sleep keeps Ember untouched. Ascend (Myth) keeps her awake but leaves 25% of embers and kilns.
@@ -271,8 +269,8 @@
     em.embers = pos(pos(em.embers) - cost);
     em.kilns[k] = owned + n;
     E.dirty();
-    E.emit('buy', { kind: 'kiln', id: KILNS[k].id, n: n });
-    if (milestoneMult(owned + n) > before) E.emit('ember', { type: 'milestone', id: KILNS[k].id, count: owned + n });
+    E.emit('buy', { kind: 'kiln', id: KILNS[k].id, n: n }, s);
+    if (milestoneMult(owned + n) > before) E.emit('ember', { type: 'milestone', id: KILNS[k].id, count: owned + n }, s);
     return true;
   }
   function kilnVisible(s, k) {
@@ -296,7 +294,7 @@
     em.embers = pos(pos(em.embers) - b.cost);
     em.breaths[id] = true;
     E.dirty();
-    E.emit('ember', { type: 'breath', id: id });
+    E.emit('ember', { type: 'breath', id: id }, s);
     return true;
   }
   function breathsOwned(s) { var em = peek(s), n = 0; for (var i = 0; i < BREATHS.length; i++) if (has(em, BREATHS[i].id)) n++; return n; }
@@ -322,6 +320,5 @@
     // UI helpers: amounts gained since the last call (cave floats / welcome-back toast)
     takeCoinGain: function () { var g = coinGainAcc; coinGainAcc = 0; return g; },
     takeOffline: function (s) { var g = s ? pos(s._emberOffline) : 0; if (s) delete s._emberOffline; return g; },
-    _pending: function () { return { coins: pendingCoins, treasures: pendingTreasures }; }
   };
 })();

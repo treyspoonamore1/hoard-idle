@@ -224,24 +224,23 @@ function flushAll(ctx, log) { advance(ctx, log, 30); }
   check(ctx.state === 'running' && SND.play('rank') === true, 'visible again -> plays');
   flushAll(ctx, log);
 
-  // engine wiring (no HOARD.cave in Node -> engine-event fallback)
+  // engine wiring (no HOARD.cave in Node: coins come only from the cave sfx hook, never from engine events)
   SND.wire(() => s);
   advance(ctx, log, 5);
   const pc = () => Object.assign({}, SND.info().played);
   let before = pc();
   E.coinCollected(s, 3, 1);
-  check((pc().coin || 0) === (before.coin || 0) + 1, 'engine coin -> clink (fallback wiring)');
+  check((pc().coin || 0) === (before.coin || 0), 'engine coin events do not double the cave clink');
+  SND._test.caveHook('coin', { n: 3, streak: 2 });
+  check((pc().coin || 0) === (before.coin || 0) + 1, 'cave sfx hook coin -> clink');
   s.gold = 1e6;
   advance(ctx, log, 1);
   before = pc();
-  SND._test.setPlayerBuying(false);
-  E.buyBuilding(s, 'digger', 1);
-  check((pc().buy || 0) === (before.buy || 0), 'auto-buys (no finger on the UI) stay silent');
-  SND._test.setPlayerBuying(true);
+  E.automated(() => E.buyBuilding(s, 'digger', 1));
+  check((pc().buy || 0) === (before.buy || 0), 'auto-buys (E.automated) stay silent');
   advance(ctx, log, 1);
   E.buyBuilding(s, 'digger', 1);
   check((pc().buy || 0) === (before.buy || 0) + 1, 'player buy -> thunk');
-  SND._test.setPlayerBuying(false);
   advance(ctx, log, 5);
   before = pc();
   E.emit('rank', 2);

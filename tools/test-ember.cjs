@@ -88,12 +88,14 @@ check(X.wake(s) === false, 'wake twice is a no-op');
   s.ember = em0;
 }
 {
-  // coins feed Ember on the next tick (engine 'coin' event)
+  // coins feed Ember at once (engine 'coin' event carries the state)
   s.ember.kilns = [20, 5, 0, 0]; s.ember.embers = 0; E.dirty();
   E.tick(s, 0.01);
   const e0 = s.ember.embers, r = X.rate(s);
   E.coinCollected(s, 50, 1);
-  check(X._pending().coins === 50, 'coin event counted');
+  check(near(s.ember.embers - e0, 50 * 0.02 * Math.max(1, r), 1e-6), 'coin event credits the state it came from');
+  const other = E.newState(); E.coinCollected(other, 50, 1);
+  check(!(other.ember && other.ember.embers > 0), 'coins in a sleeping-Ember state give no embers');
   E.tick(s, 0.5);
   const want = r * 0.5 + 50 * 0.02 * Math.max(1, r);
   check(near(s.ember.embers - e0, want, 1e-6), 'swiped coins add 0.02 x kilnPower each (+' + (s.ember.embers - e0).toFixed(3) + ' vs ' + want.toFixed(3) + ')');
@@ -142,8 +144,7 @@ check(X.wake(s) === false, 'wake twice is a no-op');
   E.tick(b, 0.01);
   const t0 = b.ember.embers, rr = X.rate(b);
   E.grabTreasure(b);
-  E.tick(b, 0.01);
-  check(near(b.ember.embers - t0, rr * 60 + rr * 0.01, 1e-6), 'Ember Treasures: a treasure gives 60s of production');
+  check(near(b.ember.embers - t0, rr * 60, 1e-6), 'Ember Treasures: a treasure gives 60s of production');
   check(!badNum(b, 's'), 'no NaN/negative after breaths: ' + badNum(b, 's'));
 }
 

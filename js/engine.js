@@ -108,15 +108,27 @@
     var i = ls.indexOf(fn);
     if (i >= 0) ls.splice(i, 1);
   }
-  function emit(name, payload) {
+  // listeners get (payload, state): state is the game state the event happened in (undefined when the
+  // caller has none), so feature modules can credit it directly instead of buffering in module globals
+  function emit(name, payload, state) {
     if (quiet > 0) return;
     var ls = listeners[name];
     if (!ls) return;
     ls = ls.slice();
     for (var i = 0; i < ls.length; i++) {
-      try { ls[i](payload); } catch (e) { logErr('event ' + name, e); }
+      try { ls[i](payload, state); } catch (e) { logErr('event ' + name, e); }
     }
   }
+
+  // automation context: feature modules run their auto-buyers/claimers inside automated(fn); events fired
+  // there carry auto:true (buy) and inAuto() is true, so listeners can tell them from the player's own actions
+  var autoDepth = 0;
+  function automated(fn) {
+    if (typeof fn !== 'function') return undefined;
+    autoDepth++;
+    try { return fn(); } finally { autoDepth--; }
+  }
+  function inAuto() { return autoDepth > 0; }
 
   // ================================================================ extension registries
   var modSources = [];    // { name, fn(state, M) }
@@ -731,7 +743,7 @@
     state.stat.coins = cl(pos(state.stat.coins) + n);
     state.run.coins = cl(pos(state.run.coins) + n);
     var got = earn(state, g, 'coin');
-    emit('coin', n);
+    emit('coin', n, state);
     return got;
   }
 
@@ -768,7 +780,7 @@
     state.gust = 0;
     state.stat.gusts = pos(state.stat.gusts) + 1;
     state.run.gusts = pos(state.run.gusts) + 1;
-    emit('gust');
+    emit('gust', undefined, state);
     return true;
   }
 
@@ -829,7 +841,7 @@
     }
     state.stat.treasures = pos(state.stat.treasures) + 1;
     state.run.treasures = pos(state.run.treasures) + 1;
-    emit('treasure', res);
+    emit('treasure', res, state);
     return res;
   }
 
@@ -923,8 +935,8 @@
     if (b.minionTier >= 0) state.tiers[b.minionTier] = pos(state.tiers[b.minionTier] - minionSum(b.minions, owned, n));
     state.buildings[id] = owned + n;
     dirty();
-    if (milestoneCountBuilding(owned + n) > before) emit('milestone', { kind: 'building', id: id, count: owned + n });
-    emit('buy', { kind: 'building', id: id, n: n });
+    if (milestoneCountBuilding(owned + n) > before) emit('milestone', { kind: 'building', id: id, count: owned + n }, state);
+    emit('buy', { kind: 'building', id: id, n: n, auto: autoDepth > 0 }, state);
     return true;
   }
 
@@ -967,8 +979,8 @@
     state.tiers[i] = cl(pos(state.tiers[i]) + n);
     dirty();
     var cnt = Math.floor(state.tiers[i]);
-    if (milestoneCountTier(cnt) > before) emit('milestone', { kind: 'tier', id: i, count: cnt });
-    emit('buy', { kind: 'tier', id: i, n: n });
+    if (milestoneCountTier(cnt) > before) emit('milestone', { kind: 'tier', id: i, count: cnt }, state);
+    emit('buy', { kind: 'tier', id: i, n: n, auto: autoDepth > 0 }, state);
     return true;
   }
 
@@ -1004,7 +1016,7 @@
     state.gold = pos(state.gold - u.cost);
     state.upgrades[id] = true;
     dirty();
-    emit('buy', { kind: 'upgrade', id: id, n: 1 });
+    emit('buy', { kind: 'upgrade', id: id, n: 1, auto: autoDepth > 0 }, state);
     return true;
   }
 
@@ -1179,7 +1191,7 @@
     for (var i = 0; i < state.missions.length; i++) {
       var m = state.missions[i];
       if (!isObj(m) || m.done) continue;
-      if (missionCur(state, m, st) >= m.target) { m.done = true; emit('mission', i); }
+      if (missionCur(state, m, st) >= m.target) { m.done = true; emit('mission', i, state); }
     }
   }
 
@@ -1209,9 +1221,9 @@
     state.missions.splice(idx, 0, nm);
     fillMissions(state);
     if (rankUp) {
-      emit('rank', state.rank);
-      D.buildings.forEach(function (b) { if (b.rank === state.rank) emit('unlock', { kind: 'building', id: b.id, name: b.name }); });
-      D.tiers.forEach(function (t, i) { if (i + 1 === state.rank) emit('unlock', { kind: 'tier', id: i, name: t.name }); });
+      emit('rank', state.rank, state);
+      D.buildings.forEach(function (b) { if (b.rank === state.rank) emit('unlock', { kind: 'building', id: b.id, name: b.name }, state); });
+      D.tiers.forEach(function (t, i) { if (i + 1 === state.rank) emit('unlock', { kind: 'tier', id: i, name: t.name }, state); });
     }
     return { ok: true, rankUp: rankUp, chests: gained };
   }
@@ -1240,7 +1252,7 @@
     if (!isObj(state.cards)) state.cards = {};
     state.cards[id] = Math.floor(pos(state.cards[id])) + n;
     dirty();
-    emit('card', { id: id, n: n });
+    emit('card', { id: id, n: n }, state);
     return true;
   }
   function openChest(state) {
@@ -1256,7 +1268,7 @@
       out.push(id);
     }
     dirty();
-    emit('chest', out);
+    emit('chest', out, state);
     return out;
   }
   function cardInfo(state, cardId) {
@@ -1316,7 +1328,7 @@
       s.sleeps = Math.floor(pos(s.sleeps)) + 1;
       s.chests = Math.floor(pos(s.chests)) + 1;
     });
-    emit('sleep', gained);
+    emit('sleep', gained, state);
     return gained;
   }
 
@@ -1366,7 +1378,7 @@
       var before = Math.floor(x[j]);
       var nv = cl(x[j] + gained[j]);
       state.tiers[j] = nv;
-      if (milestoneCountTier(Math.floor(nv)) > milestoneCountTier(before)) emit('milestone', { kind: 'tier', id: j, count: Math.floor(nv) });
+      if (milestoneCountTier(Math.floor(nv)) > milestoneCountTier(before)) emit('milestone', { kind: 'tier', id: j, count: Math.floor(nv) }, state);
     }
     return gained;
   }
@@ -1523,6 +1535,8 @@
     saveVersion: saveVersion,
     migrations: MIGRATIONS,
     isQuiet: function () { return quiet > 0; },
+    automated: automated,
+    inAuto: inAuto,
     util: { fin: fin, cl: cl, pos: pos, clamp: clamp, isObj: isObj, hash32: hash32, clone: clone, jsonSafe: jsonSafe, pow2: pow2, MAXN: MAXN }
   };
 })();

@@ -237,7 +237,7 @@
     var k = slotAt(t);
     e.firstStart = Math.floor(t);
     e.firstSlot = (t < slotStart(k) + C.runMs) ? k : k + 1; // in a break: start the upcoming lair early
-    E.emit('event', { type: 'unlock' });
+    E.emit('event', { type: 'unlock' }, s);
     return true;
   }
   function begin(s, sch, t) {
@@ -250,7 +250,7 @@
     n.cur = C.startCur; n.at = Math.floor(t);
     n.joined = pos(e.joined) + 1;
     s.events = n;
-    E.emit('event', { type: 'start', lair: n.lair, id: n.id, end: n.end });
+    E.emit('event', { type: 'start', lair: n.lair, id: n.id, end: n.end }, s);
   }
   // closes the current event: unopened chests open by themselves (cards are permanent), summary kept in `last`
   function finish(s) {
@@ -261,7 +261,7 @@
     e.over = true;
     e.last = { id: e.id, lair: e.lair, q: e.q, got: e.got, earned: e.earned };
     if (e.q >= QUESTS.length) e.completed = pos(e.completed) + 1;
-    E.emit('event', { type: 'finish', lair: e.lair, id: e.id, quests: e.q, cards: got });
+    E.emit('event', { type: 'finish', lair: e.lair, id: e.id, quests: e.q, cards: got }, s);
     return got;
   }
   // brings the event state in line with the schedule (live only): unlock, start, finish
@@ -313,8 +313,18 @@
   }
   function perCoin(s) { return C.coinBase + C.coinRate * rate(s); }
 
-  var pendingCoins = 0, autoAcc = 0;
-  E.on('coin', function (n) { n = pos(n); if (n > 0 && n < 1e9) pendingCoins += n; });
+  var autoAcc = 0;
+  // swiped coins (the engine's 'coin' event carries the state) add currency at once while a lair is open
+  E.on('coin', function (n, s) {
+    n = pos(n);
+    if (!(n > 0) || n >= 1e9 || !s) return;
+    var e = ev(s);
+    if (!e || !(e.firstStart > 0) || !running(s)) return;
+    var add = cl(n * perCoin(s));
+    e.cur = cl(pos(e.cur) + add); e.earned = cl(pos(e.earned) + add);
+    e.fromCoins = cl(pos(e.fromCoins) + add);
+    e.coins = cl(pos(e.coins) + n);
+  });
 
   E.addTickHook('events', function (s, dt, isOffline) {
     var e = ev(s);
@@ -330,16 +340,6 @@
       e.offGain = cl(pos(e.offGain) + g);
       return;
     }
-    if (pendingCoins > 0 && e.firstStart > 0) {
-      var nc = pendingCoins;
-      pendingCoins = 0;
-      if (running(s, t)) {
-        var add = cl(nc * perCoin(s));
-        e.cur = cl(pos(e.cur) + add); e.earned = cl(pos(e.earned) + add);
-        e.fromCoins = cl(pos(e.fromCoins) + add);
-        e.coins = cl(pos(e.coins) + nc);
-      }
-    } else pendingCoins = 0;
     sync(s, t);
     e = ev(s);
     if (!e.id || e.over) { e.at = Math.floor(t); return; }
@@ -356,8 +356,10 @@
   function autoOn(s) { return !(isObj(s.auto) && s.auto.master === false); }
   function automate(s) {
     if (!isObj(s.lore) || !autoOn(s)) return;
-    if (s.lore.auto_quest && questInfo(s).done) claimQuest(s, true);
-    if (s.lore.auto_chest && ev(s).chests > 0) openChest(s, true);
+    E.automated(function () {
+      if (s.lore.auto_quest && questInfo(s).done) claimQuest(s, true);
+      if (s.lore.auto_chest && ev(s).chests > 0) openChest(s, true);
+    });
   }
 
   // ---------------------------------------------------------------- buying
@@ -386,7 +388,7 @@
     e.units[k] = cl(pos(e.units[k]) + n);
     e.bought[k] = cl(pos(e.bought[k]) + n);
     // no 'event' emit per buy: the playtest log records every 'event', and hold-to-buy repeats fast
-    if (e.bought[k] === n) E.emit('event', { type: 'firstBuy', lair: e.lair, k: k });
+    if (e.bought[k] === n) E.emit('event', { type: 'firstBuy', lair: e.lair, k: k }, s);
     return true;
   }
 
@@ -428,8 +430,8 @@
     e.q += 1;
     e.chests = Math.min(50, e.chests + 1);
     e.chestCards.push(q.cards);
-    E.emit('event', { type: 'quest', lair: e.lair, step: e.q, auto: !!auto });
-    if (e.q >= QUESTS.length) E.emit('event', { type: 'complete', lair: e.lair, id: e.id });
+    E.emit('event', { type: 'quest', lair: e.lair, step: e.q, auto: !!auto }, s);
+    if (e.q >= QUESTS.length) E.emit('event', { type: 'complete', lair: e.lair, id: e.id }, s);
     return true;
   }
   function rollPool(lair) {
@@ -456,7 +458,7 @@
     out = out.filter(Boolean);
     out.forEach(function (id) { E.grantCard(s, id, 1); });
     e.got = pos(e.got) + out.length;
-    E.emit('event', { type: 'chest', lair: e.lair, cards: out, auto: !!quiet });
+    E.emit('event', { type: 'chest', lair: e.lair, cards: out, auto: !!quiet }, s);
     return out;
   }
 

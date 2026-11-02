@@ -218,7 +218,7 @@
   }
 
   function openStats() {
-    var s0 = ui.state ? ui.state() : HOARD.state;
+    var s0 = ui.state();
     if (!s0) return;
     var box = el('div', 'st-sheet');
     var head = el('div', 'sheet-head');

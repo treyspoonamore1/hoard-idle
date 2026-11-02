@@ -172,7 +172,7 @@ function buyLore(s, bought) {
 function run(prof) {
   const s = E.newState();
   s.auto.master = true;
-  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [] };
+  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {} };
   const dt = 0.5, end = HOURS * 3600;
   let pool = 0, poolV = 0, nextTr = 70 + Math.random() * 60, runStart = 0, gustWait = 0, availAt = null;
   let bought = [];
@@ -236,6 +236,7 @@ function run(prof) {
         R.loreAt.push({ t: R.T, what: 'pre-sleep', bought: bought }); bought = [];
         E.sleep(s); runStart = R.T; pool = 0; poolV = 0;
         rec.pts = s.legendPts;
+        for (const th of [100, 1000, 10000]) if (s.legend >= th && R.lt[th] == null && !R.myths.length) R.lt[th] = R.T;
         buyLore(s, rec.bought);
         rec.left = s.legendPts;
         R.sleeps.push(rec);
@@ -254,7 +255,7 @@ function run(prof) {
     }
     if (isInt(R.T / 30)) { scan(s, 'state', prof.name + '@' + R.T); scan(E.stats(s), 'stats', prof.name + '@' + R.T); }
     if (bad.length > 20) break;
-    if (s.legend > +(process.env.RUNAWAY || 1e5) || R.myths.length >= +(process.env.MAXMYTHS || 99)) { R.stopped = (s.legend > +(process.env.RUNAWAY || 1e5) ? 'runaway (Legend > ' + f(+(process.env.RUNAWAY || 1e5)) + ')' : 'myth cap') + ' at ' + hm(R.T); break; }
+    if (s.legend > +(process.env.RUNAWAY || 1e250) || R.myths.length >= +(process.env.MAXMYTHS || 99)) { R.stopped = (s.legend > +(process.env.RUNAWAY || 1e250) ? 'runaway (Legend > ' + f(+(process.env.RUNAWAY || 1e250)) + ')' : 'myth cap') + ' at ' + hm(R.T); break; }
   }
   R.final = s;
   return R;
@@ -270,6 +271,13 @@ const profiles = {
 
 function report(R) {
   const s = R.final;
+  if (process.env.SUMMARY) {
+    const gaps = R.sleeps.slice(0, 10).map(x => (x.run / 60).toFixed(0)).join(',');
+    console.log((process.env.LABEL || '') + ' | S1 ' + mm(R.sleeps[0] && R.sleeps[0].t) + ' runs ' + gaps + ' | mythAvail ' + (R.mythAvail.map(hm).join(',') || 'never') +
+      ' | L100/1K/10K ' + [100, 1000, 10000].map(k => hm(R.lt[k])).join('/') + ' | asc ' + R.myths.map(m => hm(m.t) + '+' + m.gained).join(',') + ' | L ' + f(s.legend) + ' myth ' + s.myth + ' sleeps ' + s.sleeps + (R.stopped ? ' | ' + R.stopped : '') +
+      ' | empty ' + R.sleeps.filter(x => !x.bought.length).length);
+    return;
+  }
   console.log('\n================ ' + R.name + ' (' + HOURS + ' h) ================');
   if (!QUIET) console.table(R.rows);
   console.log('Sleep | at      | run     | +Legend | Legend after | rank | lore bought right after (pts -> left)');

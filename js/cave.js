@@ -15,6 +15,7 @@
     cave.streak = function () { return 1; };
     cave.anchor = function () { return { x: 0, y: 0, cx: 0, cy: 0 }; };
     cave.metrics = function () { return null; };
+    cave.coinCount = function () { return 0; };
     return;
   }
 
@@ -1585,8 +1586,10 @@
     return { x: x, y: y, cx: cx, cy: cy };
   };
   cave.metrics = function () {
-    return { w: W, h: H, dpr: dpr, unit: unit, dk: dk, baseY: baseY, peakY: peakY(), pileW: pileW, pileH: pileH, coinR: coinR, reducedMotion: rm, inited: inited };
+    return { w: W, h: H, dpr: dpr, unit: unit, dk: dk, baseY: baseY, peakY: peakY(), pileW: pileW, pileH: pileH, coinR: coinR, reducedMotion: rm, inited: inited, coins: coinCount };
   };
+  // coins on screen right now (Restless Wings auto-gust reads this)
+  cave.coinCount = function () { return inited ? coinCount : 0; };
   // floating label like the gold numbers (text is drawn as given; color optional)
   cave.float = function (x, y, text, big, color) {
     if (!inited) return;

@@ -351,6 +351,7 @@
     sheetPatch = typeof o.patch === 'function' ? o.patch : null;
     if (sheetPatch) { var s0 = S(); if (s0 && E) patchSheet(s0, E.stats(s0)); }
     try { var f = sh.querySelector('button'); if (f) f.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    return sh;
   }
   function closeSheet(silent) {
     for (var i = 0; i < sheetTimers.length; i++) clearTimeout(sheetTimers[i]);
@@ -1337,7 +1338,7 @@
         n.setAttribute('data-chip', c.id);
         n.hidden = true; n._h = true;
         $.chips.appendChild(n);
-        c._el = n;
+        c._el = n; c._cls = '';
       });
     }
     for (var i = 0; i < chipDefs.length; i++) {
@@ -1346,6 +1347,15 @@
       var vis = !c.visible || !!safe('chip.visible:' + c.id, c.visible, [state, st], false);
       setHidden(c._el, !vis);
       if (vis && typeof c.text === 'function') setText(c._el, safe('chip.text:' + c.id, c.text, [state, st], ''));
+      if (vis && typeof c.classes === 'function') {
+        // dynamic extra classes (e.g. a theme tint, a "claimable" glow): only touch the DOM when they change
+        var cs = String(safe('chip.classes:' + c.id, c.classes, [state, st], '') || '').trim();
+        if (cs !== (c._cls || '')) {
+          (c._cls || '').split(/\s+/).forEach(function (k) { if (k) c._el.classList.remove(k); });
+          cs.split(/\s+/).forEach(function (k) { if (k) c._el.classList.add(k); });
+          c._cls = cs;
+        }
+      }
     }
   }
 
@@ -1502,7 +1512,17 @@
   };
   ui.setTab = setTab;
   ui.currentTab = function () { return tab; };
-  ui.sheet = function (node, o) { if (node) openSheet(node, o || {}); };
+  ui.sheet = function (node, o) { return node ? openSheet(node, o || {}) || null : null; };   // -> the .sheet element
+  ui.sheetEl = function () { return sheetOpen && $.overlay ? $.overlay.querySelector('.sheet') : null; };
+  // switch to a tab (built at once) and scroll one of its sections into view
+  ui.scrollToSection = function (tabId, secId) {
+    setTab(tabId);
+    if (tab !== (tabId === 'sleep' ? 'legend' : tabId) || !$.panel) return false;
+    var n = $.panel.querySelector('[data-sec="' + tab + '.' + secId + '"]');
+    if (!n) return false;
+    try { n.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }); } catch (e) { $.panel.scrollTop = n.offsetTop; }
+    return true;
+  };
   ui.closeSheet = function () { closeSheet(); };
   ui.sheetOpen = function () { return sheetOpen; };
   ui.openSettings = openSettings;
