@@ -1096,9 +1096,54 @@
       host.appendChild(t.row); return t.patch;
     } },
     { id: 'save', order: 80, build: function (host) {
-      var saveP = el('p', 'sub', 'Your hoard saves on this device by itself. Copy the save to keep a backup, or paste one below to load it.');
+      var saveP = el('p', 'sub', 'Your hoard saves by itself: on this device every 10 s and to your cloud save every 20 s, and again whenever you leave the page.');
       saveP.style.marginTop = '12px';
       host.appendChild(saveP);
+      var statusP = el('p', 'muted cloud-status', '');
+      host.appendChild(statusP);
+      var r0 = el('div', 'btn-row');
+      var saving = false;
+      var saveNowB = button('can', 'Save now', function () {
+        if (saving || !opts.saveNow) return;
+        saving = true;
+        opts.saveNow(true, function (ok) {
+          saving = false;
+          var cs = opts.cloudStatus ? opts.cloudStatus() : null;
+          if (ok) toast('Saved to the cloud.', '', 'moss');
+          else if (cs && !cs.available) toast('Saved on this device.', 'There is no cloud save here.', '');
+          else toast('Saved on this device.', (cs && cs.error) || 'The cloud save is not connected yet.', 'ember');
+          patchStatus();
+        });
+      });
+      var restoreB = button('ghost', 'Cloud backup', function () {
+        if (!opts.loadCloudBackup) return;
+        opts.loadCloudBackup(function (b) {
+          if (!b) { toast('No cloud backup yet.', 'One is made whenever a save that is further along would be replaced.', ''); return; }
+          confirmSheet('Restore the cloud backup?',
+            'Backup (saved ' + new Date(b.savedAt || Date.now()).toLocaleString() + '): ' + b.text + '. It replaces your current hoard, which becomes the new backup, so you can switch back.',
+            'Restore backup', 'Keep current', false, function () {
+              if (opts.restoreCloudBackup) opts.restoreCloudBackup(b);
+              toast('Backup restored.', b.text, 'moss');
+            });
+        });
+      });
+      add(r0, saveNowB, restoreB);
+      host.appendChild(r0);
+      function patchStatus() {
+        var cs = opts.cloudStatus ? opts.cloudStatus() : null;
+        var t;
+        if (!cs || !cs.available) t = 'Cloud save: not available here. Progress is kept on this device only.';
+        else if (cs.pendingAsk) t = 'Cloud save: waiting for you to choose which save to keep.';
+        else if (!cs.connected) t = 'Cloud save: ' + (cs.error || 'connecting…');
+        else if (cs.error) t = 'Cloud save: ' + cs.error;
+        else if (cs.lastOkAt) { var a = Math.max(0, Math.round((Date.now() - cs.lastOkAt) / 1000)); t = 'Cloud save: on · last synced ' + (a < 5 ? 'just now' : fmtTime(a) + ' ago') + '.'; }
+        else t = 'Cloud save: on.';
+        if (statusP.textContent !== t) statusP.textContent = t;
+      }
+      patchStatus();
+      var saveP2 = el('p', 'sub', 'To move your hoard by hand, copy the save text, or paste one below to load it.');
+      saveP2.style.marginTop = '14px';
+      host.appendChild(saveP2);
       var ta = el('textarea', 'savebox');
       ta.setAttribute('aria-label', 'Save text');
       ta.setAttribute('spellcheck', 'false');
@@ -1131,6 +1176,7 @@
       });
       add(r1, copyB, loadB);
       host.appendChild(r1);
+      return function () { patchStatus(); };
     } },
     { id: 'reset', order: 90, build: function (host) {
       var r2 = el('div', 'btn-row');

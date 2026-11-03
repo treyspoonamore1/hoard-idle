@@ -13,7 +13,7 @@
   var LS_KEY = 'hoard.save.v1';            // never changes (v2 saves live here too)
   var BACKUP_KEY = 'hoard.save.backup.v1';  // pre-migration copy, written once
   var BACKUP_CLOUD_KEY = 'hoard.save.backup.v1.cloud'; // pre-migration copy of an adopted older-version cloud save, once
-  var LOCAL_MS = 10000, CLOUD_MS = 60000;
+  var LOCAL_MS = 10000, CLOUD_MS = 20000;  // cloud is the only save that survives where the browser drops localStorage
   var OFFLINE_MODAL_MIN = 60;
 
   var state = null;
@@ -35,13 +35,19 @@
   // pending "newer cloud save" question: { take, keep, at, reshow }. It stays pending (cloud writes off) until the
   // player answers; if another sheet replaces it, it is asked again once no sheet is open.
   var cloudAsk = null;
+  var cloudDb = null, cloudUid = '';
+  var cloudLastOkAt = 0;    // wall ms of the last successful cloud write or read
+  var cloudErr = '';        // last cloud problem, for the Settings status line
+  var cloudBackupDone = false;
+  var localWasEmpty = false; // booted with no save on this device (no localStorage copy)
   function showCloudAsk() {
     var a = cloudAsk;
     if (!a || !HOARD.ui || !HOARD.ui.ask) return;
     a.reshow = false;
-    HOARD.ui.ask('A newer save is in the cloud',
-      'Your cloud save is newer than this device (' + new Date(a.at).toLocaleString() + '). Load it, or keep playing this one and overwrite the cloud?',
-      'Load cloud save', 'Keep this one',
+    HOARD.ui.ask(a.cloudAhead ? 'Your cloud save is further along' : 'A different save is in the cloud',
+      'Cloud (saved ' + new Date(a.at).toLocaleString() + '): ' + a.cloudText + '. This device: ' + a.hereText + '.' +
+        (a.cloudAhead ? ' If you keep this device\'s copy, the cloud save is backed up first and can be restored from Settings.' : ''),
+      a.cloudAhead ? 'Load cloud save' : 'Load cloud save', 'Keep this device\'s',
       function () { if (cloudAsk !== a) return; cloudAsk = null; a.take(); },
       function () { if (cloudAsk !== a) return; cloudAsk = null; a.keep(); },
       function () { if (cloudAsk === a) a.reshow = true; });
@@ -89,6 +95,27 @@
     } catch (e) { return 0; }
   }
   function stripSavedAt(json) { return String(json).replace(/"savedAt":\d+(\.\d+)?/, ''); }
+  // how far along a save is: compared by Myths, then Long Sleeps, then active play time, then lifetime gold
+  function progressOf(st) {
+    if (!st || typeof st !== 'object') return [0, 0, 0, 0];
+    var sp = st.stat && typeof st.stat === 'object' ? num(st.stat.playActive) : 0;
+    return [num(st.myths), num(st.sleeps), Math.floor(sp / 30), num(st.earnedAll) || num(st.earnedRun)];
+  }
+  function cmpProgress(a, b) {
+    for (var i = 0; i < 4; i++) { if (a[i] > b[i]) return 1; if (a[i] < b[i]) return -1; }
+    return 0;
+  }
+  function parseSave(raw) { try { return E.deserialize(raw); } catch (e) { return null; } }
+  function describe(st) {
+    if (!st) return 'nothing';
+    var f = HOARD.fmt || function (n) { return String(Math.floor(n)); };
+    var parts = ['rank ' + Math.max(1, Math.floor(num(st.rank)))];
+    if (num(st.legend) > 0) parts.push(f(num(st.legend)) + ' Legend');
+    if (num(st.sleeps) > 0) parts.push(num(st.sleeps) + (num(st.sleeps) === 1 ? ' Sleep' : ' Sleeps'));
+    var mins = Math.round(num(st.stat && st.stat.playActive) / 60);
+    parts.push(mins >= 90 ? (Math.round(mins / 6) / 10) + ' h played' : mins + ' min played');
+    return parts.join(' · ');
+  }
 
   function saveLocal() {
     if (!state) return '';
@@ -100,12 +127,12 @@
   }
 
   // ---------------------------------------------------------------- cloud save
-  function saveCloud(force, json) {
-    if (!cloudDoc || !state) return; // writes stay off until the cloud copy has been read successfully
-    if (cloudBusy) { cloudPending = true; return; }
-    if (!json) { try { json = E.serialize(state); } catch (e) { log(e); return; } }
+  function saveCloud(force, json, cb) {
+    if (!cloudDoc || !state) { if (cb) cb(false); return; } // writes stay off until the cloud copy has been read successfully
+    if (cloudBusy) { cloudPending = true; if (cb) cloudWaiters.push(cb); return; }
+    if (!json) { try { json = E.serialize(state); } catch (e) { log(e); if (cb) cb(false); return; } }
     var body = stripSavedAt(json);
-    if (!force && body === cloudLastBody) return;
+    if (!force && body === cloudLastBody) { if (cb) cb(true); return; }
     cloudBusy = true;
     cloudPending = false;
     var savedAt = num(state.savedAt) || Date.now();
@@ -113,19 +140,35 @@
     try { p = cloudDoc.set({ json: json, savedAt: savedAt }); } catch (e) { p = Promise.reject(e); }
     Promise.resolve(p).then(function () {
       cloudLastBody = body;
+      cloudLastOkAt = Date.now();
+      cloudErr = '';
       E.emit('save', { where: 'cloud' });
+      if (cb) cb(true);
     }, function (e) {
       log(e);
+      cloudErr = 'The last cloud save failed. It will try again.';
+      if (cb) cb(false);
     }).then(function () {
       cloudBusy = false;
-      if (cloudPending) { cloudPending = false; saveCloud(false); }
+      var w = cloudWaiters; cloudWaiters = [];
+      if (cloudPending || w.length) { cloudPending = false; saveCloud(false, null, w.length ? function (ok) { w.forEach(function (f) { try { f(ok); } catch (e) { /* ignore */ } }); } : null); }
     });
   }
+  var cloudWaiters = [];
+  // copy the cloud save to data/users/<id>/save_backup before something less far along overwrites it
+  function backupCloudDoc(data, why) {
+    if (!cloudDb || !cloudUid || !data || typeof data.json !== 'string') return Promise.resolve(false);
+    try {
+      var bdoc = cloudDb.collection('data/users/' + cloudUid).doc('save_backup');
+      return Promise.resolve(bdoc.set({ json: data.json, savedAt: num(data.savedAt) || savedAtOf(data.json), backedUpAt: Date.now(), why: String(why || '') }))
+        .then(function () { cloudBackupDone = true; logCall('event', 'cloud', { what: 'backup', why: why }); return true; }, function (e) { log(e); return false; });
+    } catch (e) { log(e); return Promise.resolve(false); }
+  }
 
-  function saveAll(forceCloud) {
+  function saveAll(forceCloud, cb) {
     // serialize once so local and cloud carry the identical savedAt
     var json = saveLocal();
-    saveCloud(!!forceCloud, json);
+    saveCloud(!!forceCloud, json, cb);
   }
 
   function connectCloud() {
@@ -140,6 +183,7 @@
         if (!db || !user || typeof user.id !== 'function') return;
         var id = await user.id();
         if (!id) return;
+        cloudDb = db; cloudUid = id;
         var doc = db.collection('data/users/' + id).doc('save');
         var snap = null, readOk = false;
         try {
@@ -151,31 +195,51 @@
         } catch (e) { snap = null; log(e); }
         if (!readOk) {
           // never write blind over a cloud save we could not read: keep writes off and retry later
+          cloudErr = 'Could not reach the cloud save yet. Retrying.';
+          logCall('event', 'cloud', { what: 'readFail', tries: cloudTries + 1 });
           if (++cloudTries < CLOUD_TRIES) setTimeout(connectCloud, CLOUD_RETRY_MS);
+          else cloudErr = 'Could not reach the cloud save. Progress is only kept on this device.';
           return;
         }
+        cloudLastOkAt = Date.now(); cloudErr = '';
         var data = snap.exists ? snap.data() : null;
-        if (!data || typeof data.json !== 'string') { cloudDoc = doc; return; } // nothing there yet
+        if (!data || typeof data.json !== 'string') { cloudDoc = doc; logCall('event', 'cloud', { what: 'empty' }); saveCloud(true); return; } // nothing there yet
         var cloudAt = num(data.savedAt) || savedAtOf(data.json);
-        if (!(cloudAt > localLoadedAt + ADOPT_MARGIN_MS) || bootedFromHot) {
-          cloudLastBody = stripSavedAt(data.json);
-          cloudDoc = doc; // ours is as new or newer
-          return;
-        }
-        var take = function () {
+        var cloudState = parseSave(data.json);
+        var cmp = cmpProgress(progressOf(cloudState), progressOf(state)); // >0: the cloud is further along
+        var take = function (why) {
           stateSwapCount++;
           backupOnce(data.json);
           backupCloudOnce(data.json);
           adopt(E.deserialize(data.json), true);
           logCall('stateReplaced', 'cloud');
+          logCall('event', 'cloud', { what: 'loaded', why: why });
           saveLocal();
           cloudLastBody = stripSavedAt(data.json);
           cloudDoc = doc;
+          try { if (why !== 'quiet' && HOARD.ui && HOARD.ui.toast) HOARD.ui.toast('Hoard loaded from the cloud.', describe(state), 'moss'); } catch (e) { log(e); }
         };
-        if (!actedSinceBoot && swapAtStart === stateSwapCount) { take(); return; }
-        // the player already played on this copy: ask, and keep cloud writes off until they choose
-        var keep = function () { cloudDoc = doc; saveCloud(true); };
-        cloudAsk = { take: take, keep: keep, at: cloudAt, reshow: false };
+        // keep this device's copy: if the cloud one is at least as far along, back it up in the cloud first
+        var keep = function () {
+          var go = function () { cloudDoc = doc; saveCloud(true); };
+          if (cmp >= 0) backupCloudDoc(data, 'kept device copy').then(go, go); else go();
+          logCall('event', 'cloud', { what: 'keptDevice', cloudAhead: cmp > 0 });
+        };
+        if (bootedFromHot) { cloudLastBody = stripSavedAt(data.json); cloudDoc = doc; return; }
+        // this device had no save of its own (new device, or the browser cleared it): the cloud save always wins
+        // unless the few minutes played here somehow got further
+        if (localWasEmpty && swapAtStart === stateSwapCount && cmp >= 0) { take(actedSinceBoot ? 'empty device' : 'quiet'); return; }
+        var cloudNewer = cloudAt > localLoadedAt + ADOPT_MARGIN_MS;
+        if (!cloudNewer && cmp <= 0) {
+          cloudLastBody = stripSavedAt(data.json);
+          cloudDoc = doc; // ours is as new or newer, and at least as far along
+          return;
+        }
+        if (cloudNewer && cmp >= 0 && !actedSinceBoot && swapAtStart === stateSwapCount) { take('quiet'); return; }
+        // the two copies disagree and the player may have played here: ask, showing both, and keep cloud writes off
+        // until they choose
+        cloudAsk = { take: function () { take('chosen'); }, keep: keep, at: cloudAt, reshow: false,
+          cloudText: describe(cloudState), hereText: describe(state), cloudAhead: cmp > 0 };
         // never shown over another sheet (welcome back, a chest, the Lore callout): it waits for them
         if (HOARD.ui && HOARD.ui.sheetOpen && HOARD.ui.sheetOpen()) cloudAsk.reshow = true; else showCloudAsk();
       } catch (e) {
@@ -256,6 +320,7 @@
     try { state = E.deserialize(fromHot ? data : local); } catch (e) { log(e); state = E.newState(); }
     if (!state) state = E.newState();
     localLoadedAt = fromHot ? num(state.savedAt) : (local ? savedAtOf(local) : 0);
+    localWasEmpty = !fromHot && !local;
     state._caveActive = false;
 
     try {
@@ -287,7 +352,33 @@
           saveAll(true);
           logCall('stateReplaced', 'reset');
         },
-        saveNow: function (forceCloud) { saveAll(!!forceCloud); }
+        saveNow: function (forceCloud, cb) { saveAll(!!forceCloud, cb); },
+        cloudStatus: function () {
+          return { connected: !!cloudDoc, lastOkAt: cloudLastOkAt, error: cloudErr, available: !!(window.claude && typeof window.claude.use === 'function'),
+            pendingAsk: !!cloudAsk };
+        },
+        loadCloudBackup: function (cb) {
+          if (!cloudDb || !cloudUid) { cb(null); return; }
+          var bdoc = cloudDb.collection('data/users/' + cloudUid).doc('save_backup');
+          Promise.resolve(bdoc.get()).then(function (snap) {
+            var d = snap && snap.exists ? snap.data() : null;
+            if (!d || typeof d.json !== 'string') { cb(null); return; }
+            var st = parseSave(d.json);
+            cb(st ? { json: d.json, savedAt: num(d.savedAt), text: describe(st), state: st } : null);
+          }, function (e) { log(e); cb(null); });
+        },
+        restoreCloudBackup: function (b) {
+          if (!b || !b.state) return;
+          // the copy being replaced becomes the new backup, so a restore can be undone
+          var cur = { json: E.serialize(state), savedAt: Date.now() };
+          var go = function () {
+            stateSwapCount++;
+            adopt(E.deserialize(b.json), false);
+            logCall('stateReplaced', 'backup');
+            saveAll(true);
+          };
+          backupCloudDoc(cur, 'replaced by restore').then(go, go);
+        }
       });
     } catch (e) { log(e); }
 
