@@ -75,6 +75,7 @@
     '.ev-sheet .bar.moss > i { background: linear-gradient(90deg, #3f7a59, var(--moss)); }',
     '.ev-unit .owned { color: var(--ev-hi); }',
     '.ev-unit .cost .c-gold { color: var(--ev-hi); }',
+    '.ev-unit .cost .c-gold.short { color: var(--ink-dim); }',
     '.ev-tot { color: var(--ev-hi); opacity: .85; }',
     '.ev-unit .ev-next { color: var(--ink-faint); font-weight: 400; }',
     '.ev-q.now { color: var(--ink); }',
