@@ -106,6 +106,25 @@
     return 0;
   }
   function parseSave(raw) { try { return E.deserialize(raw); } catch (e) { return null; } }
+  // a real Hoard save (string or object, or a {json} wrapper) — anything else is ignored at boot
+  function rawObj(raw) {
+    try {
+      var o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (o && typeof o === 'object' && typeof o.json === 'string' && !Array.isArray(o.tiers)) o = JSON.parse(o.json);
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+    } catch (e) { return null; }
+  }
+  function isSave(raw) { var o = rawObj(raw); return !!(o && Array.isArray(o.tiers) && o.buildings && typeof o.buildings === 'object'); }
+  function describeRaw(raw) {
+    if (raw === null || raw === undefined) return 'none';
+    if (raw === '') return 'empty string';
+    if (isSave(raw)) { var o = rawObj(raw); return 'save v' + (o.v || 1) + ' sleeps ' + num(o.sleeps); }
+    var t = typeof raw;
+    if (t === 'object') { try { return 'object keys: ' + Object.keys(raw).slice(0, 6).join(',').slice(0, 80); } catch (e) { return 'object'; } }
+    return t + ' ' + String(raw).slice(0, 40);
+  }
+  // nothing worth keeping: no Sleep or Myth yet and under 5 minutes of play
+  function isFresh(st) { return !!st && num(st.sleeps) < 1 && num(st.myths) < 1 && num(st.stat && st.stat.playActive) < 300; }
   function describe(st) {
     if (!st) return 'nothing';
     var f = HOARD.fmt || function (n) { return String(Math.floor(n)); };
@@ -225,17 +244,21 @@
           if (cmp >= 0) backupCloudDoc(data, 'kept device copy').then(go, go); else go();
           logCall('event', 'cloud', { what: 'keptDevice', cloudAhead: cmp > 0 });
         };
-        if (bootedFromHot) { cloudLastBody = stripSavedAt(data.json); cloudDoc = doc; return; }
-        // this device had no save of its own (new device, or the browser cleared it): the cloud save always wins
-        // unless the few minutes played here somehow got further
-        if (localWasEmpty && swapAtStart === stateSwapCount && cmp >= 0) { take(actedSinceBoot ? 'empty device' : 'quiet'); return; }
-        var cloudNewer = cloudAt > localLoadedAt + ADOPT_MARGIN_MS;
-        if (!cloudNewer && cmp <= 0) {
+        var untouched = swapAtStart === stateSwapCount;
+        if (cmp > 0) {
+          // the cloud save is further along. A device with no real save of its own, or one with nothing worth
+          // keeping, loads it without asking; otherwise the player chooses (and the cloud copy is backed up first
+          // if they keep this device's)
+          if (untouched && (localWasEmpty || isFresh(state))) { take(actedSinceBoot || !localWasEmpty ? 'device fresh' : 'quiet'); return; }
+        } else {
+          var cloudNewer = cloudAt > localLoadedAt + ADOPT_MARGIN_MS;
+          if (cmp === 0 && cloudNewer && untouched && !actedSinceBoot && !bootedFromHot) { take('quiet'); return; }
+          // this device's save is at least as far along: keep it (cloud backups are only for further-along saves)
           cloudLastBody = stripSavedAt(data.json);
-          cloudDoc = doc; // ours is as new or newer, and at least as far along
+          cloudDoc = doc;
+          logCall('event', 'cloud', { what: 'keptDevice', cloudAhead: false });
           return;
         }
-        if (cloudNewer && cmp >= 0 && !actedSinceBoot && swapAtStart === stateSwapCount) { take('quiet'); return; }
         // the two copies disagree and the player may have played here: ask, showing both, and keep cloud writes off
         // until they choose
         cloudAsk = { take: function () { take('chosen'); }, keep: keep, at: cloudAt, reshow: false,
@@ -313,8 +336,11 @@
     if (started) return;
     started = true;
     bootAt = Date.now();
-    var fromHot = data !== null && data !== undefined && data !== '';
+    var hotDesc = describeRaw(data);
+    var fromHot = isSave(data);       // the viewer's hot-reload hook can hand over things that are not a save
     var local = lsGet();
+    var localDesc = describeRaw(local);
+    if (!isSave(local)) local = null;
     bootedFromHot = fromHot;
     backupOnce(fromHot ? data : local); // before anything can overwrite an older-version save
     try { state = E.deserialize(fromHot ? data : local); } catch (e) { log(e); state = E.newState(); }
@@ -383,6 +409,7 @@
     } catch (e) { log(e); }
 
     try { if (HOARD.log && HOARD.log.init) HOARD.log.init(getState); } catch (e) { log(e); }
+    logCall('event', 'boot', { from: fromHot ? 'hot' : (local ? 'device' : 'none'), hot: hotDesc, device: localDesc });
     if (off && num(off.seconds) >= 1) logCall('event', 'offline', { sec: Math.round(num(off.seconds)), gold: Math.round(num(off.gold)) });
     try { if (HOARD._runReady) HOARD._runReady(getState); } catch (e) { log(e); }
 
