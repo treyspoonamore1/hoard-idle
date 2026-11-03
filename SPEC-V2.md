@@ -194,7 +194,7 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 ## 3. Event lairs (EVENTS agent: `js/events.js`, `js/ui-events.js`)
 
 - Unlock at Dragon Rank 3 of any run (or if `state.sleeps ≥ 1`). Three lairs rotate on a wall-clock schedule anchored to UTC dates: each lair runs **72 hours**, then 24 h break, then the next lair (Volcano Lair → Frozen Peak → Sunken Ship). For the player's first unlock, start the current lair immediately (store `state.events.firstStart`) so they don't wait.
-- Each lair has its own currency and a 4-tier AdCom chain (tier 1 makes currency; tier k makes tier k-1), bought with event currency only (flat prices), its own 10-step quest line (fixed sequence; claim → event chest), and **3 exclusive cards** per lair (9 total, registered with `registerCards`, rarity epic/legendary-ish, each with a `mod` contributing a permanent bonus, e.g. "Obsidian Heart: all gold ×(1+0.3·lv)").
+- Each lair has its own currency and a 4-tier AdCom chain (tier 1 makes currency; tier k makes tier k-1), bought with event currency only (each unit's price rises geometrically with the number of that tier bought; units made by the tier above are free and never raise prices), its own 10-step quest line (fixed sequence; claim → event chest), and **3 exclusive cards** per lair (9 total, registered with `registerCards`, rarity epic/legendary-ish, each with a `mod` contributing a permanent bonus, e.g. "Obsidian Heart: all gold ×(1+0.3·lv)").
   - Volcano Lair: currency Obsidian; Magma Imps → Lava Hounds → Fire Giants → Volcano Wyrm.
   - Frozen Peak: currency Frost Shards; Snow Kobolds → Ice Trolls → Frost Wyverns → Glacier Wyrm.
   - Sunken Ship: currency Pearls; Crab Divers → Sea Serpents → Kraken Mates → Abyssal Wyrm.

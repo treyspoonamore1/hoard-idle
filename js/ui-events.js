@@ -38,6 +38,8 @@
     var r = rateStr(perSec), i = r.lastIndexOf('/');
     return r.slice(0, i) + ' ' + what + r.slice(i);
   }
+  // prices are not round any more: never show less than the real price (12.3 -> 13)
+  function priceStr(p) { p = num(p); return fmt(p < 1000 ? Math.ceil(p - 1e-9) : p); }
   function cardDef(id) { for (var i = 0; i < D.cards.length; i++) if (D.cards[i].id === id) return D.cards[i]; return null; }
   function rarName(r) { return (D.rarities[r] && D.rarities[r].name) || r; }
   function icon(name) { var i = el('span', 'ev-ico'); i.innerHTML = (ui.icons && ui.icons[name]) || ''; return i; }
@@ -74,6 +76,7 @@
     '.ev-unit .owned { color: var(--ev-hi); }',
     '.ev-unit .cost .c-gold { color: var(--ev-hi); }',
     '.ev-tot { color: var(--ev-hi); opacity: .85; }',
+    '.ev-unit .ev-next { color: var(--ink-faint); font-weight: 400; }',
     '.ev-q.now { color: var(--ink); }',
     '.ev-q.now .n { border-color: var(--ev); color: var(--ev-hi); }',
     '.ev-q.now .rw { color: var(--ev-hi); font-weight: 700; }',
@@ -125,7 +128,7 @@
     head.appendChild(amt);
     host.appendChild(head);
     parts.push(function (st) { amt.patch(st); });
-    host.appendChild(el('p', 'hint', 'Each tier raises the one below it. Hold Buy to keep buying.'));
+    host.appendChild(el('p', 'hint', 'Prices rise with each one you buy. Higher tiers make the tier below for free. Hold Buy to keep buying.'));
     for (var k = 3; k >= 0; k--) {
       (function (k) {
         var u = lair.units[k];
@@ -137,7 +140,8 @@
         var tot = el('div', 'sub num ev-tot');
         var cost = el('div', 'cost');
         var cg = el('span', 'c-gold');
-        cost.appendChild(cg);
+        var nx = el('span', 'ev-next');
+        add(cost, cg, nx);
         add(g, nm, sub, tot, cost);
         var own = el('div', 'owned');
         var b = ui.buyButton();
@@ -151,13 +155,15 @@
           setText(own, fmt(n));
           var each = X.CHAIN[k].rate;
           var target = k === 0 ? lair.cur : lair.units[k - 1].name;
-          setText(sub, 'Each ' + u.verb + ' ' + rateIn(each, target));
+          setText(sub, 'Each ' + u.one + ' ' + u.verb + ' ' + rateIn(each, target));
           setHidden(tot, !(n > 0));
           if (n > 0) setText(tot, 'All ' + fmt(n) + ': ' + rateIn(X.unitRate(st, k), target));
+          // price of the selected amount (the button shows the count) + the next single unit's price
           var a = ui.buyAmt(st), cnt = a === 'max' ? Math.max(1, X.unitMax(st, k)) : a;
-          var price = X.CHAIN[k].cost * cnt;
-          var okk = X.active(st) && num(e.cur) + 1e-9 >= price;
-          setText(cg, X.fmtR(price) + ' ' + lair.cur);
+          var price = X.unitCost(st, k, cnt), next = X.unitPrice(st, k);
+          var okk = X.active(st) && price < 1e300 && num(e.cur) + 1e-9 >= price;
+          setText(cg, (cnt === 1 ? 'Next ' : '') + priceStr(price) + ' ' + lair.cur);
+          setText(nx, cnt === 1 ? '' : ' · next ' + priceStr(next));
           setCls(cg, 'short', !okk);
           setCls(b, 'can', okk);
           setText(b.s, '×' + fmt(cnt));

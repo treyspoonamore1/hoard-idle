@@ -153,7 +153,7 @@ check(table.greedy.boughtK.every(b => b >= 10), 'greedy buys plenty of every tie
   console.log('greedy: mean tier bought per window (0-2m, 2-10m, 10-30m, 30-60m): ' + mean.map(m => m.toFixed(2)).join(' '));
   check(mean[0] === 0, 'first 2 minutes: the best buy is tier 0');
   check(mean.every((m, i) => i === 0 || m > mean[i - 1]), 'the best marginal buy moves up the tiers over the first hour');
-  check(mean[3] >= 1, 'by the second half hour most buys are tier 2 or above... (mean ' + mean[3].toFixed(2) + ')');
+  check(mean[3] >= 1, 'by the second half hour the average buy is tier 1 or higher (mean ' + mean[3].toFixed(2) + ')');
   const late = play('greedy', { cont: 6 * 3600 }).picks.filter(([t]) => (t - t0) / HR > 5);
   check(late.some(p => p[1] === 3) && late.filter(p => p[1] >= 2).length > late.length / 2, 'after 5 h of play wyrm-tier buys are in the mix');
 }

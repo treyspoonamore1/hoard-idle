@@ -166,13 +166,30 @@ function live(s, sec, dt) { dt = dt || 1; for (let t = 0; t < sec; t += dt) { T 
   e.cur = 0;
   check(X.buyUnit(s, 0, 1) === false, 'cannot buy when short');
   e.cur = 1e6;
-  check(X.buyUnit(s, 0, 1) && e.units[0] === 1 && near(e.cur, 1e6 - X.CHAIN[0].cost), 'buy 1 tier-1 at flat price');
-  check(X.buyUnit(s, 0, 10) && e.units[0] === 11 && near(e.cur, 1e6 - 11 * X.CHAIN[0].cost), 'buy 10 at flat price (no growth)');
-  check(X.unitMax(s, 3) === Math.floor(e.cur / X.CHAIN[3].cost), 'unitMax = floor(cur / cost)');
+  const C0 = X.CHAIN[0], g0 = C0.grow;
+  check(near(X.unitPrice(s, 0), C0.cost) && X.unitCost(s, 0, 1) === X.unitPrice(s, 0), 'first unit costs the base price');
+  check(X.buyUnit(s, 0, 1) && e.units[0] === 1 && e.bought[0] === 1 && near(e.cur, 1e6 - C0.cost), 'buy 1 tier-1 at the base price');
+  check(near(X.unitPrice(s, 0), C0.cost * g0), 'next price rises by the growth factor (x' + g0 + ')');
+  const c10 = X.unitCost(s, 0, 10);
+  let sum = 0; for (let i = 1; i <= 10; i++) sum += C0.cost * Math.pow(g0, i);
+  check(near(c10, sum, 1e-9), 'x10 price = sum of the geometric series (' + c10.toFixed(2) + ' vs ' + sum.toFixed(2) + ')');
+  check(X.buyUnit(s, 0, 10) && e.units[0] === 11 && e.bought[0] === 11 && near(e.cur, 1e6 - C0.cost - sum, 1e-9), 'buy 10 charges the series');
+  // one-by-one == at once
+  { const a = clone(s), b = clone(s); for (let i = 0; i < 7; i++) X.buyUnit(a, 2, 1); X.buyUnit(b, 2, 7); check(near(a.events.cur, b.events.cur, 1e-9) && a.events.bought[2] === 7 && b.events.bought[2] === 7, '7 single buys cost the same as one x7 buy'); }
+  { const m3 = X.unitMax(s, 3); check(m3 >= 1 && X.unitCost(s, 3, m3) <= e.cur && X.unitCost(s, 3, m3 + 1) > e.cur, 'unitMax = largest affordable n (' + m3 + ' wyrms)'); }
+  check(X.unitCost(s, 1, 'max') === X.unitCost(s, 1, X.unitMax(s, 1)), "unitCost(..., 'max') = cost of unitMax");
+  // produced units are free and never raise prices
+  { const p1 = X.unitPrice(s, 0), b0 = e.bought[0]; e.units[0] += 500; check(X.unitPrice(s, 0) === p1 && e.bought[0] === b0, 'units produced by the tier above do not raise the price'); e.units[0] -= 500; }
   check(X.buyUnit(s, 'imp', 2) && e.units[0] === 13, 'buy by unit id');
   check(X.buyUnit(s, 7, 1) === false && X.buyUnit(s, -1, 1) === false && X.buyUnit(s, 'nope', 1) === false && X.buyUnit(s, 0, NaN) === false && X.buyUnit(s, 0, 0) === false, 'bad ids/amounts refused');
-  const before = e.cur; const m = X.unitMax(s, 1);
-  check(X.buyUnit(s, 1, 'max') && e.units[1] === m && e.cur < X.CHAIN[1].cost && near(before - e.cur, m * X.CHAIN[1].cost), 'buy Max');
+  check(X.unitPrice(s, 9) === 0 && X.unitCost(s, -1, 3) === 0 && X.unitMax(s, 1.5) === 0, 'bad tiers: zero price/max');
+  const before = e.cur; const m = X.unitMax(s, 1), cm = X.unitCost(s, 1, m);
+  check(X.buyUnit(s, 1, 'max') && e.units[1] === m && e.cur < X.unitPrice(s, 1) && near(before - e.cur, cm, 1e-9), 'buy Max');
+  // absurd purchase counts (a save from the flat-price days): huge but finite prices, nothing affordable
+  { const z = clone(s); z.events.bought = [5000, 1e9, 1e300, 0]; z.events.cur = 1e300;
+    const ps = [0, 1, 2, 3].map(k => X.unitPrice(z, k));
+    check(ps.every(p => isFinite(p) && p > 0) && X.unitMax(z, 1) === 0 && X.unitMax(z, 2) === 0 && X.buyUnit(z, 2, 1) === false, 'bought 5000 / 1e9 / 1e300: finite prices, unbuyable when clamped (' + ps.map(p => p.toExponential(1)).join(' ') + ')');
+    check(X.buyUnit(z, 3, 'max') && !badNum(z, 'z'), 'other tiers still buyable; state finite'); }
   check(X.buyUnit(s, 1, 'max') === false, 'Max when broke refused');
   // exact closed form: one 2h step == 7200 one-second steps (the polynomial flow composes exactly)
   const a = clone(e), b = clone(e);
