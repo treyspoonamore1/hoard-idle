@@ -37,12 +37,19 @@
   };
   // one chain shape for all three lairs (fair rotation); flavour differs.
   // tier 0 makes currency, tier k makes tier k-1. rate = units (or currency) per second per owned unit.
+  // Price of the next unit of tier k = cost x grow^bought[k]: it rises with each unit the player BUYS of that tier,
+  // never with units the tier above produced (those are free). So piling everything into tier 0 runs into a steep
+  // price wall, while a higher tier keeps handing out lower-tier units without paying that wall: the best buy moves
+  // up the chain over the event (imps first, hounds after a few minutes, giants within the hour, wyrms after
+  // ~4 h). Tuned with tools/test-lair-strategy.cjs (strategy comparison) and tools/test-events.cjs (pacing).
   var CHAIN = [
-    { cost: 10, rate: 0.1 },
-    { cost: 400, rate: 0.005 },
-    { cost: 25000, rate: 0.0015 },
-    { cost: 2.5e6, rate: 0.0005 }
+    { cost: 10, grow: 1.12, rate: 0.1 },       // 360 currency/h each
+    { cost: 100, grow: 1.10, rate: 0.02 },     // 72 tier-0 units/h each
+    { cost: 5000, grow: 1.09, rate: 0.002 },   // 7.2 tier-1 units/h each
+    { cost: 250000, grow: 1.08, rate: 0.0004 } // 1.44 tier-2 units/h each
   ];
+  var MAXBUY = 1e5;               // most units one buy can take (prices outgrow any wallet long before this)
+  var LMAX = Math.log(MAXN);      // log-space clamp for prices
   var LAIRS = [
     { id: 'volcano', name: 'Volcano Lair', short: 'Volcano', cur: 'Obsidian', icon: 'volcano',
       blurb: 'The mountain wakes. Its fire spits black glass, and the imps are hungry for it.',
@@ -79,13 +86,13 @@
     { kind: 'own', k: 0, n: 10, cards: 1 },
     { kind: 'coins', n: 150, cards: 1 },
     { kind: 'own', k: 1, n: 1, cards: 1, card: 1 },
-    { kind: 'earn', n: 25000, cards: 1 },
+    { kind: 'earn', n: 1e5, cards: 1 },
     { kind: 'own', k: 2, n: 1, cards: 1, card: 2 },
     { kind: 'own', k: 3, n: 1, cards: 1 },
     { kind: 'coins', n: 2000, cards: 1 },
-    { kind: 'earn', n: 5e8, cards: 1 },
-    { kind: 'earn', n: 2e11, cards: 1 },
-    { kind: 'earn', n: 3e13, cards: 3, all: true }
+    { kind: 'earn', n: 5e10, cards: 1 },
+    { kind: 'earn', n: 4e11, cards: 1 },
+    { kind: 'earn', n: 2e12, cards: 3, all: true }
   ];
 
   // ---------------------------------------------------------------- exclusive cards (9, never in normal chests)
@@ -370,16 +377,42 @@
   }
 
   // ---------------------------------------------------------------- buying
-  function unitCost(s, k, n) {
-    if (!(k >= 0 && k < 4)) return 0;
-    if (n === 'max') n = unitMax(s, k);
-    n = Math.floor(fin(n, 0));
-    return n > 0 ? cl(CHAIN[k].cost * n) : 0;
+  function tierOk(k) { return k === Math.floor(k) && k >= 0 && k < 4; }
+  // log of the next unit's price of tier k after `b` bought
+  function logPrice(k, b) { return Math.log(CHAIN[k].cost) + pos(b) * Math.log(CHAIN[k].grow); }
+  // price of n more units starting at `b` bought: cost x g^b x (g^n - 1) / (g - 1), clamped to MAXN
+  function seriesCost(k, b, n) {
+    if (!(n > 0)) return 0;
+    var lg = Math.log(CHAIN[k].grow);
+    var l = logPrice(k, b) + Math.log(Math.expm1(n * lg) / (CHAIN[k].grow - 1));
+    return l >= LMAX ? MAXN : cl(Math.exp(l));
   }
+  // next single unit's price
+  function unitPrice(s, k) {
+    var e = ev(s);
+    if (!e || !tierOk(k)) return 0;
+    var l = logPrice(k, e.bought[k]);
+    return l >= LMAX ? MAXN : cl(Math.exp(l));
+  }
+  function unitCost(s, k, n) {
+    var e = ev(s);
+    if (!e || !tierOk(k)) return 0;
+    if (n === 'max') n = unitMax(s, k);
+    n = Math.min(MAXBUY, Math.floor(fin(n, 0)));
+    return n > 0 ? seriesCost(k, e.bought[k], n) : 0;
+  }
+  // largest n with unitCost(n) <= currency: closed form, then nudged for rounding
   function unitMax(s, k) {
     var e = ev(s);
-    if (!e || !(k >= 0 && k < 4)) return 0;
-    return Math.max(0, Math.min(1e15, Math.floor(pos(e.cur) / CHAIN[k].cost + 1e-9)));
+    if (!e || !tierOk(k)) return 0;
+    var cur = pos(e.cur), b = e.bought[k], p = unitPrice(s, k), g = CHAIN[k].grow;
+    if (!(p > 0) || p >= MAXN || cur + 1e-9 < p) return 0;
+    var n = Math.floor(Math.log1p(cur * (g - 1) / p) / Math.log(g));
+    n = Math.max(0, Math.min(MAXBUY, fin(n, 0)));
+    function fits(m) { var c = seriesCost(k, b, m); return c < MAXN && c <= cur + 1e-9; } // a clamped price never fits
+    while (n > 0 && !fits(n)) n--;
+    for (var i = 0; i < 3 && n < MAXBUY && fits(n + 1); i++) n++;
+    return n;
   }
   function buyUnit(s, k, n) {
     var e = ev(s);
@@ -388,9 +421,9 @@
     if (!e || !running(s) || !(k >= 0 && k < 4)) return false;
     if (n === 'max') n = unitMax(s, k);
     n = Math.floor(fin(n, 0));
-    if (!(n >= 1)) return false;
-    var cost = CHAIN[k].cost * n;
-    if (pos(e.cur) + 1e-9 < cost) return false;
+    if (!(n >= 1) || n > MAXBUY) return false;
+    var cost = seriesCost(k, e.bought[k], n);
+    if (!(cost < MAXN) || pos(e.cur) + 1e-9 < cost) return false;
     e.cur = pos(e.cur - cost);
     e.units[k] = cl(pos(e.units[k]) + n);
     e.bought[k] = cl(pos(e.bought[k]) + n);
@@ -499,7 +532,7 @@
     lair: lairDef,
     lairById: function (id) { return LIDX.hasOwnProperty(id) ? LAIRS[LIDX[id]] : null; },
     rate: rate, unitRate: unitRate, perCoin: perCoin,
-    unitCost: unitCost, unitMax: unitMax, buyUnit: buyUnit,
+    unitPrice: unitPrice, unitCost: unitCost, unitMax: unitMax, buyUnit: buyUnit,
     questInfo: questInfo, claimQuest: function (s) { return claimQuest(s, false); },
     openChest: function (s) { return openChest(s, false); },
     anyClaim: anyClaim,
