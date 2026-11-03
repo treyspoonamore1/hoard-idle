@@ -10,7 +10,7 @@ function ok(c, m) { if (c) pass++; else { fail++; console.log('FAIL', m); } }
 const db = {};            // docPath -> data
 let getDelay = 1500, failGets = false, writes = [];
 
-async function page(browser, { clearLocal = true, local = null } = {}) {
+async function page(browser, { clearLocal = true, local = null, hot = undefined } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true });
   const p = await ctx.newPage();
   const errors = [];
@@ -18,7 +18,7 @@ async function page(browser, { clearLocal = true, local = null } = {}) {
   p.on('console', m => { if (m.type() === 'error' && !/favicon/.test(m.text())) errors.push(m.text()); });
   await p.exposeFunction('__dbGet', async (k) => { await new Promise(r => setTimeout(r, getDelay)); if (failGets) throw new Error('offline'); return db[k] === undefined ? null : JSON.stringify(db[k]); });
   await p.exposeFunction('__dbSet', async (k, v) => { db[k] = JSON.parse(v); writes.push(k); return true; });
-  await p.addInitScript(({ clearLocal, local }) => {
+  await p.addInitScript(({ clearLocal, local, hot }) => {
     if (clearLocal) { try { localStorage.clear(); } catch (e) {} }
     if (local) { try { localStorage.setItem('hoard.save.v1', local); } catch (e) {} }
     const doc = (k) => ({
@@ -27,7 +27,8 @@ async function page(browser, { clearLocal = true, local = null } = {}) {
     });
     const dbApi = { collection: (c) => ({ doc: (id) => doc(c + '/' + id) }) };
     window.claude = { use: async (n) => n === 'db' ? dbApi : n === 'user' ? { id: async () => 'u_test' } : null };
-  }, { clearLocal, local });
+    if (hot !== undefined) window.claude.hot = { data: hot, ready: (cb) => setTimeout(() => cb(hot), 0), snapshot: () => {} };
+  }, { clearLocal, local, hot });
   await p.goto(URL);
   await p.waitForFunction(() => window.HOARD && window.HOARD.state);
   return { p, ctx, errors };
@@ -101,6 +102,24 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
   ok(JSON.parse(db['data/users/u_test/save'].json).sleeps === 1, 'restored save written to cloud');
   ok(C.errors.length === 0, 'no errors visit 3: ' + C.errors.join(' | '));
   await C.ctx.close();
+
+  // 4b. the real phone: the viewer's hot hook hands over a non-save object, localStorage empty -> cloud still wins
+  const restored = db['data/users/u_test/save'];
+  for (const [label, opt] of [['hot {}', { hot: {} }], ['hot string', { hot: 'x' }], ['junk local', { local: '{}' }],
+                               ['fresh local save', { local: (() => { const o = JSON.parse(lesser); o.stat.playActive = 60; return JSON.stringify(o); })() }]]) {
+    db['data/users/u_test/save'] = restored; writes = [];
+    let H = await page(browser, opt);
+    await H.p.mouse.click(200, 400);
+    await wait(getDelay + 900);
+    if (/Welcome back|away/i.test(await sheetText(H.p))) { await H.p.keyboard.press('Escape'); await wait(300); }
+    const sh = await st(H.p);
+    ok(sh.sleeps === 1 && sh.legend === 3, label + ': cloud save loaded: ' + JSON.stringify(sh));
+    ok(!/further along|different save/i.test(await sheetText(H.p)), label + ': no question for a fresh device');
+    await H.p.evaluate(() => new Promise(r => { window.dispatchEvent(new Event('pagehide')); setTimeout(r, 500); }));
+    ok(JSON.parse(db['data/users/u_test/save'].json).sleeps === 1, label + ': cloud save not overwritten by a fresh game');
+    ok(H.errors.length === 0, label + ': no errors ' + H.errors.join(' | '));
+    await H.ctx.close();
+  }
 
   // 5. cloud unreachable: never writes, status explains
   failGets = true; getDelay = 50; writes = [];
