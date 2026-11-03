@@ -25,6 +25,7 @@ for (const f of ['js/data.js', 'js/engine.js']) {
   vm.runInThisContext(src, { filename: f });
 }
 const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C;
+const QB = require('./quest-balance.cjs')(E, D);
 if (process.env.FIXES && !process.env.TWEAK) eval(FIX_TWEAK);
 if (process.env.TWEAK) eval(process.env.TWEAK);
 const HOURS = +process.argv[2] || 3;
@@ -245,7 +246,7 @@ function run(prof) {
       }
       if (st.sweepRate > 0 && pool > 0) {
         const n = Math.min(pool, st.sweepRate * dt), avg = poolV / pool;
-        e0 = s.earnedAll; E.sweepCollect(s, n * avg); addSrc('sweep', s.earnedAll - e0); pool -= n; poolV -= n * avg;
+        e0 = s.earnedAll; E.sweepCollect(s, n * avg, n); addSrc('sweep', s.earnedAll - e0); pool -= n; poolV -= n * avg;
       }
       if (pool < 1e-9) { pool = 0; poolV = 0; }
     } else { pool = 0; poolV = 0; }
@@ -256,9 +257,10 @@ function run(prof) {
       }
       const iv = st.treasureInterval; nextTr = R.T + iv[0] + Math.random() * (iv[1] - iv[0]);
     }
+    QB.track(R, s, active ? dt : 0);
     R.T += dt;
     if (active && isInt(R.T)) { // ---- player actions, once per second while playing
-      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { const r = E.claimMission(s, i); if (r.rankUp && M().rankAt[s.rank] == null) M().rankAt[s.rank] = R.T; i = -1; }
+      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { const r = QB.claim(R, s, i); if (r.rankUp && M().rankAt[s.rank] == null) M().rankAt[s.rank] = R.T; i = -1; }
       while (s.chests > 0) E.openChest(s);
       shop(s, prof, R, M());
       if (E.canSleep(s) && M().sleepAvail == null) M().sleepAvail = R.T;
@@ -323,6 +325,7 @@ function report(R) {
     if (R.name === 'active') console.log('   longest NOTHING-affordable: ' + m.dead.max + 's ending ' + mm(m.dead.at) + '; stretches>=60s: ' + (m.dead.list.map(([a, d]) => mm(a) + ':' + d + 's').join(' ') || 'none') + '; longest purchase gap ' + m.maxGap.toFixed(0) + 's from ' + mm(m.maxGapAt));
   });
   const life = Object.values(R.missionLife).map(m => Object.assign(m, { dur: m.to - m.from })).sort((a, b) => b.dur - a.dur).slice(0, 4);
+  R.qbFails = QB.report(R, [['run 1', 1, 1], ['runs 2-5', 2, 5], ['runs 6+', 6, 1e9]]);
   console.log('longest-lived missions:', life.map(m => m.tpl + (m.key != null ? ':' + m.key : '') + ' ' + f(m.target) + ' (rank ' + m.rank + ', run ' + (m.sleep + 1) + ') ' + Math.round(m.dur / 60) + 'min').join(' | '));
   if (R.offlineRes) {
     const o = R.offlineRes;
@@ -352,5 +355,7 @@ function probes() {
 }
 
 probes();
-for (const n of (ONLY === 'all' ? ['active', 'casual', 'idle', 'mixed'] : ONLY.split(','))) report(run(profiles[n]));
+let qbFails = 0;
+for (const n of (ONLY === 'all' ? ['active', 'casual', 'idle', 'mixed'] : ONLY.split(','))) { const R = run(profiles[n]); report(R); qbFails += R.qbFails.length; }
+if (qbFails) { console.log('\nQUEST BALANCE: ' + qbFails + ' failure(s), see above'); process.exitCode = 1; }
 console.log('\nNaN/Infinity/negative issues:', bad.length ? '\n  ' + bad.slice(0, 20).join('\n  ') : 'none');

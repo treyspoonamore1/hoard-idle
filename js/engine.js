@@ -211,6 +211,7 @@
       rankProgress: 0,
       missions: [],
       missionSeq: 0,
+      missionPace: 0,  // quest pace (play time / design time of recent gold quests); 0 = not measured yet
       cards: {},
       chests: 0,
       legend: 0,       // Legend earned this Myth (drives the +10%/Legend passive bonus)
@@ -279,6 +280,7 @@
     o.rank = Math.floor(clamp(s.rank, 1, C.maxRank));
     o.rankProgress = Math.floor(clamp(s.rankProgress, 0, 1e6));
     o.missionSeq = Math.floor(clamp(s.missionSeq, 0, 2e9));
+    o.missionPace = clamp(s.missionPace, 0, C.missionPaceMax);
     if (isObj(s.cards)) {
       // known cards first (registered event cards included); unknown ids are kept so a module that failed to load loses nothing
       for (var ck in s.cards) {
@@ -346,12 +348,18 @@
         var key = m.key;
         if (m.tpl === 'building' && !bdef(key)) return;
         if (m.tpl === 'tier') { key = tierIdx(key); if (key < 0) return; }
-        o.missions.push({
+        var om = {
           uid: Math.floor(clamp(m.uid, 0, 2e9)), tpl: m.tpl, key: (key === undefined ? null : key),
           target: Math.max(1, pos(m.target)), base: pos(m.base), done: m.done === true
-        });
+        };
+        // quest timing (newer saves only; a mission without them is a legacy one)
+        if (typeof m.T === 'number' && m.T > 0) om.T = clamp(m.T, 1, 1e7);
+        if (typeof m.t0 === 'number') om.t0 = pos(m.t0);
+        if (typeof m.t1 === 'number') om.t1 = pos(m.t1);
+        o.missions.push(om);
       });
     }
+    fixLegacyMissions(o);
     fillMissions(o);
     return o;
   }
@@ -836,12 +844,13 @@
     return earn(state, g, 'stroke');
   }
 
-  function sweepCollect(state, valueMult) {
+  // one broom-swept coin (count: several at once, e.g. a headless sim; valueMult is then their total worth)
+  function sweepCollect(state, valueMult, count) {
     if (!ok(state)) return 0;
     if (valueMult === undefined || valueMult === null) valueMult = 1;
     var s = stats(state);
     if (s.sweepRate <= 0) return 0;
-    state.run.coins = cl(pos(state.run.coins) + 1);
+    state.run.coins = cl(pos(state.run.coins) + (count === undefined || count === null ? 1 : pos(count)));
     return earn(state, cl(s.coinWorth * pos(valueMult)), 'sweep');
   }
 
@@ -1110,6 +1119,67 @@
   }
   var STREAK_STEPS = [2, 3, 5, 8];
 
+  function isAct(tpl) { return !!(TPL[tpl] && TPL[tpl].act); }
+
+  // ---- quest pace: how fast this player's gold quests (building/tier/earn) really go, as play time / design time.
+  // Legend makes gold quests finish in seconds in late runs while coins/gusts need real minutes, so activity
+  // quests are sized from the pace (rank-gate review 2026-11: they had become the rank wall of short late runs).
+  // A log-space (geometric) moving average with each quest's ratio capped at 1: one slow gold quest must not lift
+  // the pace enough to bring back full-size coins quests (a plain average went 0.04 -> 0.4 on one 15 min quest).
+  // 'Reach X gold/s' quests are left out: how long they take depends on the shop and the Nest, not on play.
+  function missionPace(state) {
+    var p = fin(state.missionPace, 0);
+    if (p > 0) return clamp(p, C.missionPaceMin, C.missionPaceMax);
+    return C.missionPacePrior[fin(state.sleeps, 0) >= 1 ? 1 : 0];
+  }
+  function notePace(state, m) {
+    if (!isObj(m) || isAct(m.tpl) || m.tpl === 'gps' || !(fin(m.T, 0) > 0) || typeof m.t0 !== 'number') return;
+    var t1 = typeof m.t1 === 'number' ? m.t1 : pos(state.run.playActive);
+    var lo = C.missionPaceMin, hi = C.missionPaceMax;
+    var r = clamp((t1 - m.t0) / m.T, lo, hi);
+    var a = clamp(C.missionPaceAlpha, 0, 1);
+    state.missionPace = clamp(Math.exp((1 - a) * Math.log(missionPace(state)) + a * Math.log(r)), lo, hi);
+  }
+  // design seconds of play for a quest at rank r (roll = the quest's own 0.75..1.35 size roll)
+  function missionT(r, roll) { return (C.missionTimeBase + C.missionTimePerRank * (r - 1)) * roll; }
+  // the seconds an activity quest is sized for: K x pace x design time, within [minT x roll, design time]
+  function actTime(state, T, roll) {
+    var f = Math.min(1, pos(C.missionActPaceK) * missionPace(state));
+    return Math.min(T, Math.max(pos(C.missionActMinT) * roll, T * f));
+  }
+  // activity quest targets (coins, gusts, treasures; streak is the next streak step)
+  function actTarget(state, tpl, Ta, st) {
+    switch (tpl) {
+      case 'coins': return niceUp(Math.max(30, st.spillRate * C.missionCoinShare * Ta));
+      case 'treasures': return Math.min(4, Math.max(1, Math.round(0.6 * Ta / ((st.treasureInterval[0] + st.treasureInterval[1]) / 2))));
+      // the gust cooldown in effect now (Bigger Wings, cards): about half the time budget in cooldowns, rounded
+      // down (the meter is often part-way when the quest appears, so n gusts can take nearly n full cooldowns)
+      case 'gusts': return Math.min(6, Math.max(2, Math.floor(0.5 * Ta / Math.max(1, st.gustCooldown))));
+    }
+    return 0;
+  }
+  // saves from before the quest pace: an activity quest sized for the old fixed minutes is shrunk to the largest
+  // target a new one could get now (progress kept: base is untouched, so it may simply be done), and a second
+  // unfinished activity quest gives its slot back (fillMissions draws a gold quest for it).
+  function fixLegacyMissions(state) {
+    var ms = state.missions, st = null, seen = false;
+    if (!Array.isArray(ms)) return;
+    for (var i = 0; i < ms.length; i++) {
+      var m = ms[i];
+      if (!isObj(m) || !isAct(m.tpl)) continue;
+      if (!(fin(m.T, 0) > 0) && m.uid >= C.tutorialMissions.length && m.tpl !== 'streak') {
+        st = st || stats(state);
+        var r = Math.floor(fin(state.rank, 1)), roll = 1.35;
+        var Tl = missionT(r, roll), cap = actTarget(state, m.tpl, actTime(state, Tl, roll), st);
+        if (cap > 0 && m.target > cap) m.target = cap;
+        m.T = Math.round(Tl); // re-sized once: later loads leave it alone (no t0, so it never feeds the pace)
+      }
+      if (m.done === true || missionCur(state, m) >= m.target) continue; // finished: stays to be claimed
+      if (seen) { ms.splice(i, 1); i--; continue; }
+      seen = true;
+    }
+  }
+
   function rankNeed(state) {
     var r = ok(state) ? Math.floor(fin(state.rank, 1)) : 1;
     return r + 2;
@@ -1143,6 +1213,22 @@
     return '?';
   }
 
+  // the gold/s one could add by spending `budget` gold on a single unlocked building (the best one for it) at today's
+  // multipliers. Milestone doublings and the Nest's own growth are left out, so a quest sized from it is reachable.
+  function gpsReach(state, st, budget) {
+    var best = 0, g = C.buildingGrowth, r = Math.floor(fin(state.rank, 1));
+    var fr = st.baseGps > 0 ? Math.max(1, st.gps / st.baseGps) : 1; // buildingEach carries Gold Frenzy; baseGps not
+    for (var i = 0; i < D.buildings.length; i++) {
+      var b = D.buildings[i];
+      if (r < b.rank) continue;
+      var c0 = bGold(state, b) * Math.pow(g, Math.floor(pos(state.buildings[b.id])));
+      if (!(c0 > 0) || !(budget > 0)) continue;
+      var n = Math.floor(Math.log(1 + budget * (g - 1) / c0) / Math.log(g) + 1e-9);
+      best = Math.max(best, n * pos(st.buildingEach[b.id]) / fr);
+    }
+    return cl(best);
+  }
+
   // gold-equivalent price of one unit of tier i (its gold plus the gold of the units it consumes)
   function tierEq(state, i) {
     var eq = 0;
@@ -1167,8 +1253,8 @@
       return m;
     }
 
-    var active = {};
-    (state.missions || []).forEach(function (x) { if (x) active[x.tpl + ':' + x.key] = true; active[x.tpl] = (active[x.tpl] || 0) + 1; });
+    var active = {}, actBusy = false;
+    (state.missions || []).forEach(function (x) { if (x) { active[x.tpl + ':' + x.key] = true; active[x.tpl] = (active[x.tpl] || 0) + 1; if (isAct(x.tpl)) actBusy = true; } });
     var cands = [];
     var unlockedB = D.buildings.filter(function (b) { return r >= b.rank; });
     var unlockedT = [0, 1, 2, 3, 4].filter(function (i) { return r >= i + 1; });
@@ -1178,6 +1264,7 @@
 
     D.missionTemplates.forEach(function (t) {
       if (r < t.minRank) return;
+      if (t.act && actBusy) return; // one activity quest at a time: two would both gate on the player's own play
       if (t.tpl === 'streak' && !nextStreak) return;
       if (t.tpl === 'gps' && st.baseGps < 1) return;
       var w = t.weight;
@@ -1191,7 +1278,9 @@
 
     var rate = st.baseGps + 3 * st.coinWorth + st.sweepGps;
     // T = seconds of active play this mission should take (longer at higher rank)
-    var T = (C.missionTimeBase + C.missionTimePerRank * (r - 1)) * (0.75 + 0.6 * h3);
+    var roll = 0.75 + 0.6 * h3, T = missionT(r, roll);
+    m.T = Math.round(T); m.t0 = pos(state.run.playActive);
+    var Ta = actTime(state, T, roll); // activity quests: sized from the quest pace, not the fixed design time
     switch (m.tpl) {
       case 'building': {
         // favour the newest buildings
@@ -1226,22 +1315,27 @@
         break;
       case 'coins':
         m.base = pos(state.run.coins);
-        m.target = niceUp(Math.max(30, st.spillRate * C.missionCoinShare * T));
+        m.target = actTarget(state, 'coins', Ta, st);
         break;
       case 'streak':
         m.target = nextStreak;
         break;
       case 'treasures':
         m.base = pos(state.run.treasures);
-        m.target = Math.min(4, Math.max(1, Math.round(0.6 * T / ((st.treasureInterval[0] + st.treasureInterval[1]) / 2))));
+        m.target = actTarget(state, 'treasures', Ta, st);
         break;
       case 'gusts':
         m.base = pos(state.run.gusts);
-        m.target = Math.min(6, Math.max(2, Math.round(0.5 * T / st.gustCooldown)));
+        m.target = actTarget(state, 'gusts', Ta, st);
         break;
-      case 'gps':
-        m.target = niceUp(st.baseGps * (r >= 7 ? 1.25 + 0.3 * h2 : 1.5 + 0.6 * h2));
+      case 'gps': {
+        // a multiple of today's gold/s, but no more than spending the building-quest budget on the best building
+        // gives (rank-gate review 2026-11: at rank 5+ the plain multiple took 15-35 min and became the new wall)
+        var gm = st.baseGps * (r >= 7 ? 1.25 + 0.3 * h2 : 1.5 + 0.6 * h2);
+        var reach = st.baseGps + gpsReach(state, st, rate * T * C.missionBuildShare);
+        m.target = niceUp(Math.max(st.baseGps * C.missionGpsMinStep, Math.min(gm, reach)));
         break;
+      }
     }
     m.target = Math.max(1, cl(m.target));
     return m;
@@ -1269,7 +1363,11 @@
     for (var i = 0; i < state.missions.length; i++) {
       var m = state.missions[i];
       if (!isObj(m) || m.done) continue;
-      if (missionCur(state, m, st) >= m.target) { m.done = true; emit('mission', i, state); }
+      if (missionCur(state, m, st) >= m.target) {
+        m.done = true;
+        if (typeof m.t0 === 'number') m.t1 = pos(state.run.playActive); // for the quest pace
+        emit('mission', i, state);
+      }
     }
   }
 
@@ -1280,6 +1378,7 @@
     var m = state.missions[idx];
     if (!isObj(m)) return fail;
     if (!m.done && missionCur(state, m) < m.target) return fail;
+    notePace(state, m);
     var gained = 1;
     state.chests = Math.floor(pos(state.chests)) + 1;
     state.rankProgress = Math.floor(pos(state.rankProgress)) + 1;
@@ -1392,6 +1491,7 @@
     reason = reason || 'sleep';
     for (var i = 0; i < sleepHooks.length; i++) { guarded('sleep', sleepHooks[i], [state, snap, reason]); dirty(); }
     state.missions = [];
+    if (reason === 'ascend') state.missionPace = 0; // Legend is gone: gold quests are slow again, measure afresh
     dirty();
     fillMissions(state);
     return snap;

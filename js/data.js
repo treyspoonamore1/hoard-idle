@@ -69,6 +69,17 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     missionBuildShare: 0.5,   // share of income assumed spent on a building/tier mission
     missionBuildMaxStep: 12,  // max extra buildings a single mission asks for
     missionCoinShare: 0.6,    // share of spilled coins a player actually collects
+    missionGpsMinStep: 1.05,  // a 'Reach X gold/s' quest always asks for at least +5% (see gpsReach in engine.js)
+    // activity quests (tpl.act: coins, gusts, treasures, streak) need the player's own play time, and Legend does
+    // not speed them up, so they are sized from how fast THIS player's gold quests have been going (the quest pace:
+    // play time a gold quest took / its design time, a geometric moving average) instead of the fixed design time.
+    // Only one activity quest can be in the 3 slots at a time (rank-gate review, 2026-11).
+    missionPaceAlpha: 0.3,      // weight of each newly timed gold quest in the (log-space) pace average
+    missionPaceMin: 0.02,       // one quest's ratio is clamped to [min, max] (a quest finished while away counts as min)
+    missionPaceMax: 1,          // ... so one slow gold quest moves the pace at most x(1/pace)^alpha
+    missionPacePrior: [0.4, 0.12], // pace before any gold quest was timed: no Long Sleep yet / after one
+    missionActPaceK: 2,         // an activity quest gets K x pace x the design time (never more than the design time) ...
+    missionActMinT: 75,         // ... and never less than this many seconds (x the quest's own 0.75..1.35 roll)
     tutorialMissions: [
       { tpl: 'building', key: 'digger', target: 15 },
       { tpl: 'coins', target: 260 },
@@ -215,15 +226,15 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
   ];
 
   // ---------------------------------------------------------------- missions
-  // tpl ids used in state.missions[].tpl
+  // tpl ids used in state.missions[].tpl; act: an activity quest (needs the player's own play, see C.missionActPaceK)
   var missionTemplates = [
     { tpl: 'building', minRank: 1, weight: 3, text: 'Own {n} {name}' },
     { tpl: 'tier', minRank: 1, weight: 2, text: 'Own {n} {name}' },
     { tpl: 'earn', minRank: 1, weight: 2, text: 'Earn {n} gold this Sleep' },
-    { tpl: 'coins', minRank: 1, weight: 2, text: 'Collect {n} coins' },
-    { tpl: 'streak', minRank: 1, weight: 1, text: 'Reach a x{n} streak' },
-    { tpl: 'treasures', minRank: 3, weight: 0.3, text: 'Grab {n} gleaming treasures' },
-    { tpl: 'gusts', minRank: 2, weight: 1, text: 'Use {n} Wing Gusts' },
+    { tpl: 'coins', minRank: 1, weight: 2, act: true, text: 'Collect {n} coins' },
+    { tpl: 'streak', minRank: 1, weight: 1, act: true, text: 'Reach a x{n} streak' },
+    { tpl: 'treasures', minRank: 3, weight: 0.3, act: true, text: 'Grab {n} gleaming treasures' },
+    { tpl: 'gusts', minRank: 2, weight: 1, act: true, text: 'Use {n} Wing Gusts' },
     { tpl: 'gps', minRank: 2, weight: 2, text: 'Reach {n} gold/s' }
   ];
 

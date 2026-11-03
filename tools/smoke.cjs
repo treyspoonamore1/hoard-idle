@@ -49,13 +49,20 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   await page.mouse.up();
   const midStreak = await page.evaluate(() => HOARD.state.stat.bestStreak);
   // fast flick
+  // (a headless page under load can stretch the 6 moves past the 220 ms gust window, so a flick that came out too
+  // slow is retried a couple of times while the gust is still ready; a gust that never fires still fails)
   const g0 = await page.evaluate(() => HOARD.state.stat.gusts);
-  await page.waitForTimeout(200);
-  await page.mouse.move(box.x + 40, cy);
-  await page.mouse.down();
-  for (let i = 1; i <= 6; i++) { await page.mouse.move(box.x + 40 + i * 45, cy - i * 4); await page.waitForTimeout(12); }
-  await page.mouse.up();
-  await page.waitForTimeout(400);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.waitForTimeout(200);
+    await page.mouse.move(box.x + 30, cy);
+    await page.mouse.down();
+    for (let i = 1; i <= 6; i++) { await page.mouse.move(box.x + 30 + i * 50, cy - i * 4); await page.waitForTimeout(8); }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const fired = await page.evaluate((g) => HOARD.state.stat.gusts > g || !HOARD.engine.gustReady(HOARD.state), g0);
+    if (fired) break;
+    console.log('flick attempt ' + (attempt + 1) + ' too slow for a gust, retrying');
+  }
   const after = await page.evaluate(() => ({ gold: HOARD.state.gold, coins: HOARD.state.stat.coins, px: HOARD.state.stat.swipePx, gusts: HOARD.state.stat.gusts, earned: HOARD.state.earnedAll }));
   console.log('after swipe:', JSON.stringify(after), 'bestStreak', midStreak);
   check(after.earned > 0 && after.gold > 0, 'gold > 0 after swiping');

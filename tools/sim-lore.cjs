@@ -27,6 +27,7 @@ const files = ['js/data.js', 'js/engine.js', 'js/lore.js'];
 if (process.env.EMBER) { if (!process.env.NOEVENTS) files.push('js/events.js'); files.push('js/ember.js'); }
 for (const f of files) vm.runInThisContext(fs.readFileSync(path.join(root, f), 'utf8'), { filename: f });
 const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.ember, EV = H.events;
+const QB = require('./quest-balance.cjs')(E, D);
 const WALL0 = Date.UTC(2026, 10, 3, 8, 0, 0);
 let simT = 0;
 if (EV) EV._now = () => WALL0 + simT * 1000;
@@ -281,16 +282,17 @@ function run(prof) {
     }
     if (st.sweepRate > 0 && pool > 0) {
       const n = Math.min(pool, st.sweepRate * dt), avg = poolV / pool;
-      E.sweepCollect(s, n * avg); pool -= n; poolV -= n * avg;
+      E.sweepCollect(s, n * avg, n); pool -= n; poolV -= n * avg;
     }
     if (pool < 1e-9) { pool = 0; poolV = 0; }
     if (R.T >= nextTr) {
       if (swiping) { const r = E.grabTreasure(s); if (r.spawnCoins) { pool = Math.min(C.maxCoins, pool + r.spawnCoins); poolV += r.spawnCoins; } }
       const iv = st.treasureInterval; nextTr = R.T + iv[0] + Math.random() * (iv[1] - iv[0]);
     }
+    QB.track(R, s, dt);
     R.T += dt;
     if (isInt(R.T)) { // ---- player decisions once per second
-      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { E.claimMission(s, i); i = -1; }
+      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { QB.claim(R, s, i); i = -1; }
       while (s.chests > 0) E.openChest(s);
       if (prof.buys(R.T)) shop(s, prof);
       buyLore(s, bought);
@@ -388,6 +390,7 @@ function report(R) {
       (offS ? ', biggest Legend jump away x' + R.off.reduce((a, o) => Math.max(a, o.legend0 > 0 ? o.legend1 / o.legend0 : 1), 1).toFixed(1) : ''));
   }
   console.log('Myth available at: ' + (R.mythAvail.map(hm).join(', ') || 'never'));
+  R.qbFails = QB.report(R, [['run 1', 1, 1], ['runs 2-5', 2, 5], ['runs 6+', 6, 1e9]]);
   R.myths.forEach((m, i) => console.log('Ascend ' + (i + 1) + ' at ' + hm(m.t) + ' (+' + m.gained + ' Myth, Legend ' + f(m.legend) + ', waited ' + mm(m.sinceAvail) + ')'));
   if (R.stopped) console.log('stopped: ' + R.stopped);
   console.log('final: legend ' + f(s.legend) + ' (pts ' + f(s.legendPts) + '), myth ' + s.myth + ' (pts ' + s.mythPts + '), sleeps ' + s.sleeps + ', gps ' + f(E.stats(s).baseGps) + ', relics ' + JSON.stringify(s.relics));
@@ -486,5 +489,5 @@ function offProbe(file) {
 }
 if (process.env.OFFPROBE) { for (const p of process.env.OFFPROBE.split(',')) offProbe(p); }
 else if (process.env.CURVE) curve();
-else for (const n of (ONLY === 'all' ? Object.keys(profiles) : ONLY.split(','))) report(run(profiles[n]));
+else for (const n of (ONLY === 'all' ? Object.keys(profiles) : ONLY.split(','))) { const R = run(profiles[n]); report(R); if (R.qbFails && R.qbFails.length) process.exitCode = 1; }
 console.log('\nNaN/Infinity/negative issues:', bad.length ? '\n  ' + bad.slice(0, 20).join('\n  ') : 'none');

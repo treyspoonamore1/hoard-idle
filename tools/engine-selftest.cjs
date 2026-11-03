@@ -52,6 +52,80 @@ for (const g of [null, undefined, '', '{bad', 42, [], { gold: 'x', tiers: 'no', 
   // Ember kilns keep the old 25 / 50 / 100 / 150 / 200 curve (no x2 at 10)
   check(E.milestoneMult('kiln', 10) === 1 && E.milestoneMult('kiln', 25) === 2 && E.milestoneMult('kiln', 300) === 64 && E.milestoneMult('building', 10) === 2 && E.nextMilestone('kiln', 0) === 25 && E.nextMilestone('kiln', 200) === 300, 'kiln milestones');
 }
+// quests (rank-gate review 2026-11): (a) never two activity quests (coins/gusts/treasures/streak) in the 3 slots;
+// (b) an activity quest's expected play time stays within 2x of what a gold quest takes this player at that rank
+// (quest pace x design time), with a floor of C.missionActMinT x 1.35 -- first run (prior / slow pace) and late
+// Legend runs (fast pace) alike
+{
+  const C = D.C, ACT = t => !!(D.missionTemplates.find(x => x.tpl === t) || {}).act;
+  let n = 0, dup = 0, over = [], acts = {};
+  for (const sleeps of [0, 11]) for (const pace of [0, 0.4, 0.15, 0.05, 0.02]) for (let rank = 1; rank <= 12; rank++) {
+    const s = E.newState();
+    Object.assign(s, { sleeps, rank, missionSeq: 3 + rank * 131 + sleeps * 7 });
+    s.buildings.digger = 30; s.buildings.raid = 10; s.tiers = [1e4, 100, 10, 0, 0]; s.gold = 1e6;
+    if (sleeps) s.upgrades.wings1 = true;
+    for (let k = 0; k < 40; k++) {
+      const i = k % 3;
+      s.missionPace = pace; s.rank = rank; s.rankProgress = 0;
+      s.missions[i].done = true;
+      E.claimMission(s, i);
+      n++;
+      if (s.missions.filter(m => ACT(m.tpl)).length > 1) dup++;
+      const m = s.missions[i], st = E.stats(s);
+      if (!ACT(m.tpl) || m.tpl === 'streak') continue;
+      acts[m.tpl] = (acts[m.tpl] || 0) + 1;
+      const p = pace > 0 ? pace : C.missionPacePrior[sleeps ? 1 : 0];
+      const exp = m.tpl === 'coins' ? m.target / st.spillRate : m.tpl === 'gusts' ? (m.target - 1) * st.gustCooldown : m.target * (st.treasureInterval[0] + st.treasureInterval[1]) / 2;
+      const bound = Math.max(C.missionActMinT * 1.35, 2 * p * m.T);
+      if (!(exp <= bound + 1e-9) || !(m.T > 0)) over.push(m.tpl + ' ' + m.target + ' @rank ' + rank + ' pace ' + p + ': ' + exp.toFixed(0) + 's > ' + bound.toFixed(0) + 's');
+    }
+  }
+  check(dup === 0, 'two activity quests in the slots after ' + dup + ' of ' + n + ' draws');
+  check(over.length === 0, 'activity quest longer than 2x a gold quest: ' + over.slice(0, 4).join(' | '));
+  check(acts.coins > 20 && acts.gusts > 10, 'activity quests still drawn (' + JSON.stringify(acts) + ')');
+  // the quest pace follows timed gold quests (play time to done / design time) and survives a save round trip
+  const s = E.newState(); s.missionSeq = 50; s.missions = []; E.tick(s, 0.1);
+  const g = s.missions.findIndex(m => !ACT(m.tpl));
+  const m = s.missions[g]; check(m && m.T > 0 && typeof m.t0 === 'number', 'new quests carry design time and start time');
+  s.run.playActive = m.t0 + 0.1 * m.T; m.done = true; m.t1 = s.run.playActive;
+  const p0 = s.missionPace; E.claimMission(s, g);
+  check(p0 === 0 && s.missionPace < C.missionPacePrior[0] && s.missionPace > 0.1, 'quest pace moves toward a fast gold quest (' + s.missionPace.toFixed(3) + ')');
+  check(E.deserialize(E.serialize(s)).missionPace === s.missionPace, 'quest pace saved');
+  // one slow gold quest must not bring back full-size coins quests (code review 2026-11: a plain average went
+  // 0.04 -> 0.40 on one 15 min 'Reach X gold/s' quest and the next coins quests asked for 11-17 min)
+  const slow = (tpl) => {
+    const q = E.newState(); q.sleeps = 11; q.rank = 7; q.missionSeq = 300; q.buildings.digger = 30; q.tiers = [1e4, 100, 10, 0, 0];
+    q.missions = []; E.tick(q, 0.1); q.missionPace = 0.04;
+    q.missions[0] = { uid: 999, tpl, key: tpl === 'building' ? 'digger' : null, target: 1, base: 0, done: true, T: 720, t0: 0, t1: 900 };
+    E.claimMission(q, 0);
+    return q.missionPace;
+  };
+  const pb = slow('building');
+  check(pb > 0.04 && pb <= 0.04 * Math.pow(1 / 0.04, C.missionPaceAlpha) + 1e-9 && 2.5 * pb < 0.5, 'one slow gold quest moves the pace only a little (0.04 -> ' + pb.toFixed(3) + ')');
+  check(slow('gps') === 0.04, "'Reach X gold/s' quests do not feed the quest pace");
+  // Ascend (Legend reset) measures the pace afresh
+  const qa = E.newState(); qa.sleeps = 5; qa.missionPace = 0.03; E.resetRun(qa, 'ascend');
+  const qs = E.newState(); qs.sleeps = 5; qs.missionPace = 0.03; E.resetRun(qs, 'sleep');
+  check(qa.missionPace === 0 && qs.missionPace === 0.03, 'Ascend resets the quest pace, a Long Sleep keeps it');
+}
+// 'Reach X gold/s' quests ask for at least +5% and no more than spending the building-quest budget can give
+{
+  const C = D.C;
+  let n = 0, bad = [];
+  for (const rank of [3, 5, 7, 9]) for (const scale of [1, 1e6, 1e15]) {
+    const s = E.newState(); s.sleeps = 11; s.rank = rank; s.missionSeq = 400 + rank;
+    s.buildings.digger = 60; s.buildings.raid = 40; s.buildings.mine = 25; s.tiers = [1e4 * scale, 100 * scale, 10, 0, 0];
+    s.missions = []; E.tick(s, 0.1);
+    for (let k = 0; k < 60; k++) {
+      const i = k % 3; s.rank = rank; s.rankProgress = 0; s.missions[i].done = true; E.claimMission(s, i);
+      const m = s.missions[i]; if (m.tpl !== 'gps') continue;
+      const g = E.stats(s).baseGps; n++;
+      const old = g * (rank >= 7 ? 1.55 : 2.1);
+      if (!(m.target >= g * C.missionGpsMinStep - 1e-9) || !(m.target <= old * 1.1 + 1)) bad.push(m.target + ' at ' + g.toFixed(0) + ' gold/s, rank ' + rank);
+    }
+  }
+  check(n >= 10 && bad.length === 0, 'gold/s quest targets within [+5%, old multiple] (' + n + ' drawn): ' + bad.slice(0, 3).join(' | '));
+}
 // offline accuracy: substeps vs fine Euler-free reference (exact integrator at 1s)
 {
   const a = E.newState(); a.rank = 6; a.tiers = [0, 5, 5, 5, 5]; a.buildings.digger = 10;

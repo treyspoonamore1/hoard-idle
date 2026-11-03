@@ -244,6 +244,48 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
   check(back.lore.greed === 1 && back.lore.halls === 1 && Object.keys(back.cards).length >= 21 && back.events.lair === 'volcano', 'player save: round trip after play');
 }
 
+// ---------------------------------------------------------------- the real player's save at Sleep 11, rank 5
+// (tools/fixtures/v2-player-rank5-coins.json, the cloud doc's inner json): two "Collect coins" quests (940 from
+// base 877, 1200 from base 553) sized by the old fixed-minutes rule sat in two of the three slots. On load they are
+// re-sized for the quest pace (progress kept, so both are simply done), no second unfinished activity quest stays,
+// and the quests drawn after claiming them are sane.
+{
+  const raw = fs.readFileSync(path.join(FIX, 'v2-player-rank5-coins.json'), 'utf8');
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'];
+  const H = load(mods, disk), E5 = H.engine, D5 = H.data;
+  const o = JSON.parse(raw);
+  const s = E5.deserialize(raw);
+  const ACT = t => !!(D5.missionTemplates.find(x => x.tpl === t) || {}).act;
+  check(s.v === 2 && s.sleeps === 11 && s.rank === 5 && s.rankProgress === 1 && s.missionSeq === 258 && s.legend === o.legend, 'rank-5 save: Sleep 11, rank 5 (1/7), seq 258 kept');
+  check(s.missions.length === 3 && s.missions[0].tpl === 'building' && s.missions[0].key === 'mine' && s.missions[0].target === 170, 'rank-5 save: the gold quest (Own 170 Gold Mines) is untouched');
+  const coins = s.missions.filter(m => m.tpl === 'coins');
+  check(coins.length === 2 && coins[0].base === 877 && coins[1].base === 553, 'rank-5 save: both coins quests kept with their bases (progress kept)');
+  check(coins.every(m => m.target < 940 && m.target <= 600), 'rank-5 save: coins targets re-sized (' + coins.map(m => m.target).join(', ') + ' from 940, 1200)');
+  const info = [0, 1, 2].map(i => E5.missionInfo(s, i));
+  check(info[1].done && info[2].done && !info[0].done, 'rank-5 save: the two coins quests are now done (810 and 1134 coins collected)');
+  const unfinishedAct = st => st.missions.filter((m, i) => ACT(m.tpl) && !E5.missionInfo(st, i).done).length;
+  check(unfinishedAct(s) <= 1, 'rank-5 save: at most one unfinished activity quest after load');
+  const s0 = E5.deserialize(raw);
+  for (let i = 0; i < 4; i++) E5.tick(s, 0.5); // Quest Scribe (auto_quest) claims them
+  check(s.rankProgress === 3 && s.rank === 5, 'rank-5 save: Quest Scribe claims both (rank progress 1 -> ' + s.rankProgress + ' of 7)');
+  check(s.missions.filter(m => ACT(m.tpl)).length <= 1, 'rank-5 save: the new quests hold at most one activity quest (' + s.missions.map(m => m.tpl).join(', ') + ')');
+  const st5 = E5.stats(s);
+  for (const m of s.missions) {
+    if (m.tpl === 'coins') check((m.target / st5.spillRate) <= 240, 'rank-5 save: a new coins quest needs at most 4 min of spill (' + m.target + ' coins at ' + st5.spillRate + '/s)');
+    if (m.tpl === 'gusts') check((m.target - 1) * st5.gustCooldown <= 240, 'rank-5 save: a new gusts quest needs at most 4 min of cooldowns');
+  }
+  check(!finiteDeep(s, 'state'), 'rank-5 save: all numbers finite after load + ticks');
+  const back = E5.deserialize(E5.serialize(s0));
+  check(JSON.stringify(back.missions) === JSON.stringify(s0.missions), 'rank-5 save: re-sized quests round-trip unchanged (the fix is applied once)');
+  // the re-size is applied once even when the pace (and so the cap) has changed by the next load (code review
+  // 2026-11: a copy with no coin progress went 940 -> 410 and then -> 190 on a reload at pace 0.02)
+  const o2 = JSON.parse(raw); o2.missions.forEach(m => { if (m.tpl === 'coins') m.base = o2.run.coins; });
+  const r1 = E5.deserialize(JSON.stringify(o2)), t1 = r1.missions.filter(m => m.tpl === 'coins').map(m => m.target);
+  r1.missionPace = 0.02;
+  const r2 = E5.deserialize(E5.serialize(r1)), t2 = r2.missions.filter(m => m.tpl === 'coins').map(m => m.target);
+  check(t1.length >= 1 && t1[0] < 940 && JSON.stringify(t1) === JSON.stringify(t2) && r2.missions.every(m => m.tpl !== 'coins' || m.T > 0), 'rank-5 save: an unfinished re-sized coins quest keeps its size on the next load (' + t1.join(',') + ' -> ' + t2.join(',') + ')');
+}
+
 console.log((fails ? fails + ' FAILURES, ' : '') + passes + ' checks passed');
 console.log(fails ? 'SAVE-COMPAT FAILED' : 'SAVE-COMPAT OK');
 process.exitCode = fails ? 1 : 0;
