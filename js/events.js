@@ -95,12 +95,14 @@
     // volcano
     { id: 'ev_obsidianheart', group: 'volcano', name: 'Obsidian Heart', rarity: 'legendary',
       flavor: 'Still warm after a thousand years.',
-      describe: function (lv) { return 'All gold and brood ×' + f1(1 + 0.3 * L(lv)) + '.'; },
-      mod: function (s, M, lv) { M.allMult *= 1 + 0.3 * lv; } },
+      describe: function (lv) { return 'All gold ×' + f1(1 + 0.2 * L(lv)) + '.'; },
+      // gold only (buildings and coins): an allMult would also speed up all four minion tiers
+      mod: function (s, M, lv) { M.gpsMult *= 1 + 0.2 * lv; M.coinFlat *= 1 + 0.2 * lv; } },
     { id: 'ev_magmatalon', group: 'volcano', name: 'Magma Talon', rarity: 'epic',
       flavor: 'It drips, but never runs dry.',
-      describe: function (lv) { return 'Coins and strokes are worth ×' + f1(1 + 0.4 * L(lv)) + '.'; },
-      mod: function (s, M, lv) { M.coinMult *= 1 + 0.4 * lv; M.strokeMult *= 1 + 0.4 * lv; } },
+      describe: function (lv) { return 'Coins and strokes are worth ×' + f1(1 + 0.15 * L(lv)) + '.'; },
+      // stroke worth is a share of coin worth, so coinMult lifts strokes too (a strokeMult would square it)
+      mod: function (s, M, lv) { M.coinMult *= 1 + 0.15 * lv; } },
     { id: 'ev_cindercrown', group: 'volcano', name: 'Cinder Crown', rarity: 'epic',
       flavor: 'The imps crowned their first king with it. He did not last.',
       describe: function (lv) { return 'Gold Frenzy lasts +' + (4 * L(lv)) + 's and is ×' + f1(1 + 0.1 * L(lv)) + ' stronger.'; },
@@ -356,9 +358,14 @@
   function autoOn(s) { return !(isObj(s.auto) && s.auto.master === false); }
   function automate(s) {
     if (!isObj(s.lore) || !autoOn(s)) return;
+    var LO = HOARD.lore;
+    function on(id) {
+      if (LO && typeof LO.nodeOn === 'function') return LO.nodeOn(s, id);
+      return !!s.lore[id] && !(isObj(s.auto) && s.auto['n:' + id] === false);
+    }
     E.automated(function () {
-      if (s.lore.auto_quest && questInfo(s).done) claimQuest(s, true);
-      if (s.lore.auto_chest && ev(s).chests > 0) openChest(s, true);
+      if (on('auto_quest') && questInfo(s).done) claimQuest(s, true);
+      if (on('auto_chest') && ev(s).chests > 0) openChest(s, true);
     });
   }
 

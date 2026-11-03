@@ -500,7 +500,7 @@
     if (!p || typeof p !== 'object') return;
     var lair = p.lair ? X.lairById(p.lair) : null;
     try {
-      if (p.type === 'start' && lair) ui.toast(lair.name + ' is open!', 'Build its brood and swipe coins to win its treasures. ' + span((num(p.end) - X.now()) / 1000) + ' left. Tap the chip up top.', 'gold');
+      if (p.type === 'start' && lair) ui.toast(lair.name + ' is open!', 'Build its brood and swipe coins to win its treasures. ' + span((num(p.end) - X.now()) / 1000) + ' left. Open it from the chip up top.', 'gold');
       else if (p.type === 'finish' && lair) ui.toast(lair.name + ' has closed.', p.quests + ' of ' + X.QUESTS.length + ' quests done.' + (p.cards && p.cards.length ? ' Unopened chests gave ' + p.cards.length + ' ' + plural(p.cards.length, 'treasure', 'treasures') + '.' : ''), '');
       else if (p.type === 'quest' && p.auto && lair) ui.toast('Quest Scribe', lair.name + ' quest ' + p.step + ' claimed.', 'moss');
       else if (p.type === 'chest' && p.auto && lair && p.cards && p.cards.length) ui.toast('Chest Kobold', 'Opened a ' + lair.name + ' chest: ' + p.cards.map(function (id) { var d = cardDef(id); return d ? d.name : id; }).join(', ') + '.', 'moss');

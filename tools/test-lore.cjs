@@ -58,7 +58,7 @@ check(L.node('greed').max === 15 && L.node('talons').max === 3 && L.node('start_
   check(lastEv('lore') && lastEv('lore').id === 'auto_dig' && lastEv('lore').level === 1, "'lore' event emitted");
   check(!L.buy(s, 'auto_dig'), 'one-level node cannot be bought twice');
   check(!L.canBuy(s, 'auto_upg'), 'auto_upg locked without auto_build');
-  check(L.buy(s, 'auto_build') && L.level(s, 'auto_build') === 1 && s.legendPts === 0, 'auto_build after auto_dig (8)');
+  check(L.buy(s, 'auto_build') && L.level(s, 'auto_build') === 1 && s.legendPts === 2, 'auto_build after auto_dig (6)');
   check(Math.abs(E.stats(s).gps - gps0) < 1e-9, 'Legend passive bonus unchanged by spending');
   s.legendPts = 1e9;
   for (let i = 0; i < 40; i++) L.buy(s, 'greed');
@@ -107,10 +107,10 @@ check(L.node('greed').max === 15 && L.node('talons').max === 3 && L.node('start_
   s.legend = 50; s.legendPts = 200;
   ['start_gold', 'start_gold', 'keep_claws', 'keep_broom', 'start_rank', 'start_brood'].forEach(id => check(L.buy(s, id), 'buy ' + id));
   s.upgrades.claws1 = true; s.upgrades.scales1 = true; s.upgrades.broom1 = true; s.upgrades.wings1 = true;
-  s.earnedRun = 4e7; s.gold = 1e6; s.buildings.digger = 30; s.rank = 6; s.chests = 2; s.cards = { [D.cards[0].id]: 3 };
+  s.earnedRun = 7e7; s.gold = 1e6; s.buildings.digger = 30; s.rank = 6; s.chests = 2; s.cards = { [D.cards[0].id]: 3 };
   s.run.playActive = 5000;
   const g = E.sleep(s);
-  check(g === 6 && lastEv('sleep') === 6, 'sleep gains floor(sqrt(40)) = 6 Legend');
+  check(g === 6 && lastEv('sleep') === 6, 'sleep gains floor(3.2 * cbrt(7)) = 6 Legend');
   check(s.legend === 56 && s.legendPts === 200 - 1 - 4 - 3 - 3 - 5 - 4 + 6, 'Sleep adds gain to legend and legendPts (' + s.legend + '/' + s.legendPts + ')');
   check(s.gold === 5e4, 'Buried Cache II: run starts with 50K gold (' + s.gold + ')');
   check(s.rank === 3, 'Old Renown I: run starts at rank 3');
@@ -178,14 +178,14 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
   tickN(u, 4);
   check(Object.keys(u.upgrades).length >= 3, 'Lair Steward buys upgrades (' + Object.keys(u.upgrades).join(',') + ')');
   // Dream Keeper
-  const k = fresh(); k.lore.auto_sleep = 1; k.legend = 10; k.legendPts = 0; k.earnedRun = 1e8; // gain 10 = 100%
+  const k = fresh(); k.lore.auto_sleep = 1; k.legend = 10; k.legendPts = 0; k.earnedRun = 3.1e8; // gain floor(3.2 * cbrt(31)) = 10 = 100%
   tickN(k, 4);
   check(k.sleeps === 0, 'Dream Keeper is off until its toggle is on');
   k.auto.sleep = true; k.auto.sleepPct = 150; tickN(k, 4);
   check(k.sleeps === 0, 'Dream Keeper waits for gain >= 150%');
   k.auto.sleepPct = 100; tickN(k, 4);
   check(k.sleeps === 1 && k.legend === 20 && k.legendPts === 10, 'Dream Keeper sleeps at gain >= 100%');
-  check(L.autoSleepPct({ auto: { sleepPct: 9999 } }) === 300 && L.autoSleepPct({ auto: { sleepPct: 1 } }) === 25 && L.autoSleepPct({ auto: {} }) === 100, 'sleep slider clamps 25-300%');
+  check(L.autoSleepPct({ auto: { sleepPct: 9999 } }) === 300 && L.autoSleepPct({ auto: { sleepPct: 1 } }) === 50 && L.autoSleepPct({ auto: {} }) === 100, 'sleep slider clamps 50-300%');
   noBad(s, 'automation'); noBad(b, 'brood'); noBad(k, 'dream keeper');
 }
 
@@ -314,6 +314,61 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
     const b = finiteDeep(s, 'state') || finiteDeep(E2.stats(s), 'stats');
     check(!b, 'all modules: no NaN/Infinity (' + b + ')');
   }
+}
+
+// ---------------------------------------------------------------- engine hooks used by automation (integration)
+{
+  const H3 = load(), E3 = H3.engine, L3 = H3.lore;
+  const seen = [];
+  E3.on('buy', (d, st) => seen.push({ auto: !!(d && d.auto), st }));
+  const s = E3.newState(); s.gold = 1e6; s.legendPts = 10; L3.buy(s, 'auto_dig');
+  E3.automated(() => E3.buyBuilding(s, 'digger', 1));
+  check(seen.length === 1 && seen[0].auto === true && seen[0].st === s, "'buy' inside E.automated carries auto:true and the state");
+  E3.buyBuilding(s, 'digger', 1);
+  check(seen[1] && seen[1].auto === false && !E3.inAuto(), "a player buy carries auto:false");
+  const d0 = s.buildings.digger;
+  for (let i = 0; i < 4; i++) E3.tick(s, 0.25);     // 1 s after the manual buy: Foremen wait
+  check(s.buildings.digger === d0, 'auto-buyers pause for 1.5 s after a player buy (on that state)');
+  for (let i = 0; i < 8; i++) E3.tick(s, 0.25);
+  check(s.buildings.digger > d0, 'auto-buyers resume after the pause (' + d0 + ' -> ' + s.buildings.digger + ')');
+  check(seen.slice(2).every(x => x.auto), 'Kobold Foremen buys are tagged auto');
+  const other = E3.newState(); other.gold = 1e6; other.legendPts = 10; L3.buy(other, 'auto_dig');
+  const o0 = other.buildings.digger;
+  E3.buyBuilding(s, 'digger', 1);                    // a manual buy on another state must not pause this one
+  for (let i = 0; i < 4; i++) E3.tick(other, 0.25);
+  check(other.buildings.digger > o0, 'a manual buy on one state does not pause automation on another');
+}
+
+
+// ---------------------------------------------------------------- v2 final fixes
+{
+  const H4 = load(['js/events.js']), E4 = H4.engine, L4 = H4.lore, X4 = H4.events;
+  // milestones: announced once per run, with the threshold passed
+  const ms = []; E4.on('milestone', m => ms.push(m));
+  const s = E4.newState(); s.rank = 3; s.gold = 1e9; s.tiers = [1e6, 0, 0, 0, 0]; E4.dirty();
+  E4.buyTier(s, 1, 30);
+  check(ms.length === 1 && ms[0].count === 25 && ms[0].owned === 30, 'milestone names the threshold passed (25), not the count (' + JSON.stringify(ms) + ')');
+  s.tiers[1] = 5; E4.dirty();          // Wyrmlings spent on Drakes / Mines ...
+  E4.buyTier(s, 1, 25);                // ... and bought back over 25
+  check(ms.length === 1, 'a milestone passed again in the same run is not announced again');
+  s.earnedRun = 2e7; E4.sleep(s); s.rank = 3; s.gold = 1e9; s.tiers = [1e6, 0, 0, 0, 0]; E4.dirty();
+  E4.buyTier(s, 1, 12);
+  check(ms.length === 2 && ms[1].count === 10, 'milestone marks reset with the Long Sleep');
+  const back = E4.deserialize(E4.serialize(s));
+  check(back.run.mst_1 === 1, 'milestone marks survive a save (' + back.run.mst_1 + ')');
+  // Legend gain: 3 at the Sleep minimum, cube root above it
+  const g = E4.newState(); g.earnedRun = 1e7;
+  check(E4.legendOnSleep(g) === 3, 'first Sleep at 1e7 still gives 3 Legend');
+  g.earnedRun = 8e7; check(E4.legendOnSleep(g) === 6, 'Legend gain 3.2 * cbrt(earnedRun / 1e7) (8e7 -> 6)');
+  // first automation is affordable from the first Sleeps
+  check(L4.cost(g, 'auto_quest') === 2 && L4.cost(g, 'auto_chest') === 2 && L4.cost(g, 'auto_gust') === 3 && L4.cost(g, 'auto_brood') === 4 && L4.cost(g, 'auto_build') === 6, 'automation costs 2/2/3/4/6');
+  // Ascend: the sleep-hook snapshot still has the Myth-ending Legend and lore
+  const a = E4.newState(); a.lore = { myth_gate: 1, greed: 3, auto_dig: 1 }; a.legend = L4.MYTH.minLegend * 3; a.legendPts = 50;
+  let snapLegend = -1, snapGreed = -1;
+  E4.addSleepHook('t-asc', (st, prev, why) => { if (why === 'ascend') { snapLegend = prev.legend; snapGreed = prev.lore.greed; } });
+  const got = L4.ascend(a);
+  check(got >= 1 && snapLegend === L4.MYTH.minLegend * 3 && snapGreed === 3, 'Ascend snapshot keeps Legend and lore (' + snapLegend + ', ' + snapGreed + ')');
+  check(a.legend === 0 && a.legendPts === 0 && !a.lore.greed && a.lore.auto_dig === 1 && a.myths === 1, 'Ascend still resets Legend and Power lore, keeps automation');
 }
 
 console.log((fails ? 'FAILED ' + fails + ' of ' : 'ALL ') + (passes + fails) + ' lore checks' + (fails ? '' : ' passed'));

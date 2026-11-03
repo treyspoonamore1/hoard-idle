@@ -162,7 +162,7 @@
     var list = X.breathList(s0);
     var open = list.filter(function (b) { return !b.bought; });
     var done = list.filter(function (b) { return b.bought; });
-    host.appendChild(ui.secHead('Fire Breaths', done.length + '/' + list.length + ' learned'));
+    host.appendChild(ui.secHead('Fire Breaths', done.length + ' of ' + list.length + ' learned'));
     if (!open.length) host.appendChild(ui.el('p', 'hint', 'Ember knows every breath. Her kilns keep the warmth growing.'));
     else host.appendChild(ui.el('p', 'hint', 'One-time gifts of fire, paid in embers.'));
     open.forEach(function (b) {

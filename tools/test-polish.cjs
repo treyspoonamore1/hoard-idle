@@ -347,7 +347,7 @@ function statsTests() {
   multOk(SV.multipliers(s), s, 'after offline');
 
   // Long Sleep
-  s.earnedRun = Math.max(s.earnedRun, 9e7);
+  s.earnedRun = Math.max(s.earnedRun, 2.3e8);  // 3.2 * cbrt(23) = 9 Legend
   s.earnedAll = Math.max(s.earnedAll, s.earnedRun);
   const g = E.sleep(s);
   check(g >= 9, 'slept for ' + g + ' Legend');

@@ -92,6 +92,42 @@
     return stamp(en.t) + '  ' + en.k + (d ? '  ' + d : '');
   }
   LOG.line = line;
+  // a line for people (the Play log sheet); Copy log keeps the raw JSON lines
+  function hhmm(t) { var d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function nameOf(kind, id) {
+    var D = HOARD.data;
+    if (!D) return String(id);
+    if (kind === 'tier' && D.tiers && D.tiers[id]) return D.tiers[id].name;
+    if (kind === 'building' && D.buildings) for (var i = 0; i < D.buildings.length; i++) if (D.buildings[i].id === id) return D.buildings[i].name;
+    var L = HOARD.lore, n = L && L.node ? (L.node(id) || (L.relic && L.relic(id))) : null;
+    return n ? n.name : String(id);
+  }
+  function f(n) { return typeof HOARD.fmt === 'function' ? HOARD.fmt(num(n)) : String(Math.round(num(n))); }
+  function secs(n) { return typeof HOARD.fmtTime === 'function' ? HOARD.fmtTime(num(n)) : Math.round(num(n)) + 's'; }
+  function pretty(en) {
+    var d = en.d && typeof en.d === 'object' ? en.d : {}, k = en.k, t = hhmm(en.t) + '  ';
+    try {
+      if (k === 'sleep') return t + 'Long Sleep: +' + f(d.gained) + ' Legend';
+      if (k === 'run') return t + (d.reason === 'ascend' ? 'Ascend (' + f(d.legend) + ' Legend, +' + f(d.mythGained) + ' Myth)' : 'Run ended: +' + f(d.legendGained) + ' Legend') + ', ' + secs(d.active) + ' active, rank ' + num(d.rank);
+      if (k === 'rank') return t + 'Dragon Rank ' + num(d.rank);
+      if (k === 'milestone') return t + nameOf(d.kind, d.id) + ' ×2 at ' + f(d.count);
+      if (k === 'lore') return t + (d.relic ? 'Relic: ' : 'Lore: ') + nameOf('', d.id) + (num(d.level) > 1 ? ' level ' + num(d.level) : '');
+      if (k === 'first_buy') return t + 'First ' + nameOf(d.kind, d.id);
+      if (k === 'upgrade') return t + 'Upgrade: ' + d.id;
+      if (k === 'unlock') return t + 'Unlocked ' + nameOf(d.kind, d.id);
+      if (k === 'chest') return t + 'Chest: ' + (Array.isArray(d.cards) ? d.cards.length : 0) + ' cards';
+      if (k === 'myth') return t + 'Myth +' + f(d.gained);
+      if (k === 'offline') return t + 'Away ' + secs(d.sec) + ': +' + f(d.gold) + ' gold';
+      if (k === 'stuck') return t + 'Nothing to buy for ' + secs(d.sec) + ' (rank ' + num(d.rank) + ')';
+      if (k === 'snap') return t + 'Gold ' + f(d.gold) + ', ' + f(d.gps) + '/s, rank ' + num(d.rank);
+      if (k === 'session') return t + 'Session start (' + (d.why || '') + ')';
+      if (k === 'session_end') return t + 'Session end';
+      if (k === 'event') return t + 'Event: ' + (d.type || '') + (d.lair ? ' ' + d.lair : '');
+      if (k === 'migrate') return t + 'Save upgraded v' + num(d.from) + ' to v' + num(d.to) + ' (' + f(d.legendPts) + ' Legend to spend)';
+    } catch (e) { /* fall through */ }
+    return t + String(k).replace(/_/g, ' ');
+  }
+  LOG.pretty = pretty;
   LOG.text = function (n) {
     var list = n ? ring.slice(-n) : ring;
     return list.map(line).join('\n');
@@ -282,7 +318,8 @@
       for (var id in lore1) if (Object.prototype.hasOwnProperty.call(lore1, id) && num(lore1[id]) > num(lore0[id])) newLore.push(id + ':' + lore1[id]);
       event('run', {
         reason: reason, active: Math.round(num(prev.run && prev.run.playActive)), wall: meta.runStartAt ? Math.round((now - meta.runStartAt) / 1000) : null,
-        legendGained: num(state.legend) - num(prev.legend), rank: num(prev.rank), earned: Math.round(num(prev.earnedRun)),
+        legendGained: reason === 'ascend' ? 0 : num(state.legend) - num(prev.legend), legend: num(prev.legend),
+        mythGained: Math.max(0, num(state.myth) - num(prev.myth)), rank: num(prev.rank), earned: Math.round(num(prev.earnedRun)),
         buildings: prev.buildings, lore: newLore, sleeps: num(state.sleeps)
       });
       meta.runStartAt = now;
@@ -309,26 +346,37 @@
         var txt = 'Hoard play log (' + ring.length + ' entries)\nsession: ' + JSON.stringify(tot) + '\n' + LOG.text();
         ui.copyText(txt, ta, 'Log copied.');
       });
-      head.appendChild(lab); head.appendChild(copyB);
-      var list = el('pre', 'loglist');
+      var showB = ui.button('small ghost', 'Show', function () { showSheet(); });
+      var btns = el('div', 'playlog-btns');
+      btns.appendChild(showB); btns.appendChild(copyB);
+      head.appendChild(lab); head.appendChild(btns);
       var ta = el('textarea', 'savebox');
       ta.setAttribute('aria-label', 'Play log text');
       ta.readOnly = true;
       ta.hidden = true;
-      wrap.appendChild(head); wrap.appendChild(list); wrap.appendChild(ta);
+      wrap.appendChild(head); wrap.appendChild(ta);
       host.appendChild(wrap);
-      var shown = -1;
       return function () {
         var n = ring.length;
         ui.setText(cnt, n + ' ' + (n === 1 ? 'entry' : 'entries') + ' on this device. Private: helps tune the game.');
-        var lastT = n ? ring[n - 1].t : 0;
-        if (lastT !== shown) {
-          shown = lastT;
-          list.textContent = n ? ring.slice(-50).reverse().map(line).join('\n') : 'Nothing logged yet.';
-        }
         if (ta.value) ta.hidden = false;
       };
     } });
+    function showSheet() {
+      var box = ui.el('div', 'playlog-sheet');
+      box.appendChild(ui.el('h3', null, 'Play log'));
+      box.appendChild(ui.el('p', 'muted', 'The last 50 things that happened, newest first.'));
+      var list = ui.el('div', 'loglist2');
+      var items = ring.slice(-50).reverse();
+      if (!items.length) list.appendChild(ui.el('p', 'muted', 'Nothing logged yet.'));
+      items.forEach(function (en) { list.appendChild(ui.el('div', 'logline', pretty(en))); });
+      box.appendChild(list);
+      var br = ui.el('div', 'btn-row');
+      br.appendChild(ui.button('', 'Back', function () { if (ui.openSettings) ui.openSettings(); else ui.closeSheet(); }));
+      box.appendChild(br);
+      ui.sheet(box, { full: true });
+    }
+    ui.css('.playlog-btns{display:flex;gap:8px;flex:0 0 auto}.loglist2 .logline{padding:6px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--ink-dim);font-variant-numeric:tabular-nums}.loglist2 .logline:last-child{border-bottom:0}', 'log2');
     ui.css('.playlog .loglist{margin:6px 0 0;max-height:180px;overflow:auto;padding:8px;border-radius:var(--radius);border:1px solid var(--line-2);background:#110f18;color:var(--ink-dim);font:11px/1.35 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text}', 'log');
   }
 

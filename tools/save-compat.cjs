@@ -57,7 +57,8 @@ function compareLoad(H, name, raw, label) {
   check(s.legendPts === s.legend, label + name + ': legendPts === legend (' + s.legendPts + ' vs ' + s.legend + ')');
   check(s.myth === 0 && s.mythPts === 0 && s.myths === 0, label + name + ': myth fields 0');
   for (const k of ['lore', 'relics', 'flags', 'auto']) check(s[k] && typeof s[k] === 'object' && !Array.isArray(s[k]), label + name + ': ' + k + ' is an object');
-  check(s.stat.playActive === 0 && s.stat.fastestSleep === 0 && s.run.playActive === 0, label + name + ': new stat fields default to 0');
+  // v1 had no active-time stat: game time is the estimate (the current run only when no Sleep was taken yet)
+  check(s.stat.playActive === o.time && s.stat.fastestSleep === 0 && s.run.playActive === ((o.sleeps || 0) >= 1 ? 0 : o.time), label + name + ': new stat fields seeded from v1 time (' + s.stat.playActive + '/' + s.run.playActive + ')');
   const bad = finiteDeep(s, 'state');
   check(!bad, label + name + ': all numbers finite ' + (bad || ''));
   // wrapper form (cloud doc { json, savedAt })
@@ -94,7 +95,10 @@ for (const f of fixtures) {
     check(JSON.stringify(sa.tierRates) === JSON.stringify(sb.tierRates) && JSON.stringify(sa.treasureInterval) === JSON.stringify(sb.treasureInterval) && JSON.stringify(sa.buildingGps) === JSON.stringify(sb.buildingGps), f + ': tierRates/treasureInterval/buildingGps identical');
     for (const id of Object.keys(a.buildings)) check(JSON.stringify(V1.engine.buildingCost(a, id, 10)) === JSON.stringify(V2.engine.buildingCost(b, id, 10)), f + ': buildingCost(' + id + ',10) identical');
     for (let i = 0; i < 5; i++) check(JSON.stringify(V1.engine.tierCost(a, i, 'max')) === JSON.stringify(V2.engine.tierCost(b, i, 'max')), f + ': tierCost(' + i + ',max) identical');
-    check(V1.engine.legendOnSleep(a) === V2.engine.legendOnSleep(b), f + ': legendOnSleep identical');
+    // v2 Legend gain is 3.2 * cbrt(earnedRun / 1e7) (v1: sqrt(earnedRun / 1e6)); both give 3 at the 1e7 Sleep minimum,
+    // so a v1 player who is Sleep-ready gets the same first Sleep
+    if (V1.engine.canSleep(a)) check(V1.engine.legendOnSleep(a) === V2.engine.legendOnSleep(b), f + ': legendOnSleep identical at the Sleep minimum (' + V1.engine.legendOnSleep(a) + ' vs ' + V2.engine.legendOnSleep(b) + ')');
+    check(V1.engine.canSleep(a) === V2.engine.canSleep(b), f + ': canSleep identical');
     const oa = V1.engine.offline(a, 7200), ob = V2.engine.offline(b, 7200);
     check(oa.gold === ob.gold && JSON.stringify(oa.minions) === JSON.stringify(ob.minions), f + ': offline(2h) identical ' + oa.gold + ' vs ' + ob.gold);
   }

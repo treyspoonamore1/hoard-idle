@@ -95,7 +95,15 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
   cursor: pointer;
 }
 .icon-btn svg { width: 22px; height: 22px; }
-.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; min-height: 26px; }
+.chips {
+  /* one line that never wraps: a chip appearing mid-swipe (streak, frenzy) must not push the cave down */
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; height: 28px; box-sizing: content-box;
+  margin: -4px 0 -8px; padding: 8px 0;   /* room for the pressable chips' larger hit area */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.chips::-webkit-scrollbar { display: none; }
+.chips.ovf { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent); }
+.chips > * { flex: none; }
 .gps { font-weight: 700; color: var(--gold); font-variant-numeric: tabular-nums; margin-right: 4px; }
 .chip {
   display: inline-flex; align-items: center;
@@ -111,6 +119,9 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 .chip[hidden] { display: none; }
 .chip.streak { color: var(--gold-hi); border-color: rgba(242, 184, 75, 0.5); }
 .chip.legend { color: var(--r-epic); border-color: rgba(194, 124, 255, 0.45); }
+.chip.legend.spend { background: #33244a; border-color: var(--r-epic); color: #ecd6ff; }
+.welcome-legend { color: var(--r-epic); font-weight: 700; margin: 10px 0 0; }
+.btn.can.lore-go-btn { background: linear-gradient(180deg, #e7c8ff, var(--r-epic) 60%, #9b58d6); color: #1e0b2e; border-color: #f0dcff; }
 .chip.frenzy { color: #fff1e0; background: #6d2a17; border-color: var(--ember); }
 .chip.ember { color: #ffd2b8; background: #4a2318; border-color: rgba(232, 99, 58, 0.6); }
 /* module chips (HOARD.ui.addChip); pressable ones get a larger invisible hit area */
@@ -159,11 +170,13 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 #gust.ready .gust-sub { color: var(--gold); }
 
 #toasts {
-  position: absolute;
-  left: 12px; right: 12px; top: 10px;
+  /* fixed above everything (sheets included); ui.js puts it at the top of the cave while no sheet is open */
+  position: fixed;
+  left: 0; right: 0; top: max(10px, env(safe-area-inset-top, 0px));
+  margin: 0 auto; max-width: 520px; box-sizing: border-box; padding: 0 12px;
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   pointer-events: none;
-  z-index: 3;
+  z-index: 30;
 }
 .toast {
   max-width: 100%;
@@ -294,9 +307,9 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
 .btn.ghost { background: transparent; }
 .btn-row { display: flex; gap: 8px; margin-top: 10px; }
 /* row extras (HOARD.ui.addRowExtra): a slot at the bottom of each Lair/Brood row */
-.row-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.row-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 2px; margin-bottom: -6px; }
 .row-extras:empty { display: none; }
-.row-extras .toggle-row { min-height: 0; border-bottom: 0; gap: 8px; font-size: 14px; color: var(--ink-dim); }
+.row-extras .toggle-row { min-height: 44px; border-bottom: 0; border-top: 0; margin-top: 0; gap: 8px; font-size: 12px; color: var(--ink-dim); }
 .btn-row .btn { flex: 1 1 0; }
 
 .seg { display: flex; gap: 0; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; }
@@ -393,6 +406,8 @@ textarea { font-family: ui-monospace, Menlo, monospace; -webkit-user-select: tex
   width: 24px; height: 24px; border-radius: 50%;
   background: var(--ink-dim); transition: transform 0.15s;
 }
+.switch::before { content: ""; position: absolute; inset: -8px -6px; }   /* 48x72 hit area; ::after is the knob */
+.toggle-row { cursor: pointer; }
 .switch[aria-checked="true"] { background: var(--moss); }
 .switch[aria-checked="true"]::after { transform: translateX(24px); background: #fff; }
 .savebox {
@@ -563,13 +578,12 @@ html.rm *, html.rm *::before, html.rm *::after { animation: none !important; tra
       <span class="chip streak" id="chip-streak" hidden></span>
       <span class="chip frenzy" id="chip-frenzy" hidden></span>
       <span class="chip ember" id="chip-ember" hidden></span>
-      <span class="chip legend" id="chip-legend" hidden></span>
+      <button class="chip legend press" id="chip-legend" type="button" hidden></button>
     </div>
   </header>
 
   <section id="caveband" aria-label="Cave. Swipe to gather gold.">
     <canvas id="cave"></canvas>
-    <div id="toasts" aria-live="polite"></div>
     <button id="gust" type="button" aria-label="Wing Gust">
       <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="ring-bg" cx="32" cy="32" r="28" fill="none" stroke-width="4"/><circle class="ring" id="gust-ring" cx="32" cy="32" r="28" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="175.93" stroke-dashoffset="0"/></svg>
       <span class="gust-label">Gust<span class="gust-sub" id="gust-sub">Ready</span></span>
@@ -582,6 +596,7 @@ html.rm *, html.rm *::before, html.rm *::after { animation: none !important; tra
 </div>
 
 <div id="overlay" role="dialog" aria-modal="true"></div>
+<div id="toasts" aria-live="polite"></div>
 
 <script src="js/data.js"></script>
 <script src="js/engine.js"></script>

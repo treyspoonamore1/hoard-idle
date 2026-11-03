@@ -64,7 +64,8 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     ],
     // prestige
     sleepReq: 1e7,
-    legendDiv: 1e6,
+    legendDiv: 1e6,          // v1 only (sqrt gain); v2 uses legendK * cbrt(earnedRun / sleepReq)
+    legendK: 3.2,
     legendPer: 0.1,          // +10% per Legend
     // offline
     offlineCapHours: 8,

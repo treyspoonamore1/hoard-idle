@@ -73,7 +73,11 @@
   function effectNodes() {
     var box = el('div', 'lore-eff');
     var what = el('span'), now = el('b'), arrow = el('span', 'lore-arrow', '→'), next = el('b'), plain = el('span');
-    add(box, what, now, arrow, next, plain);
+    // optional second stat on its own line (Magpie: treasures + Frenzy; Long Watch: away time + gold)
+    var l2 = el('div'), what2 = el('span'), now2 = el('b'), arrow2 = el('span', 'lore-arrow', '→'), next2 = el('b');
+    add(l2, what2, now2, arrow2, next2);
+    add(box, what, now, arrow, next, plain, l2);
+    setHidden(l2, true);
     box.patch = function (s, id, isRelic) {
       var e = L.effect(s, id), lvl = isRelic ? L.relicLevel(s, id) : L.level(s, id);
       var d = isRelic ? L.relic(id) : L.node(id);
@@ -84,9 +88,16 @@
         if (e.next !== null) setText(next, e.next);
         setHidden(plain, true);
         setHidden(what, false); setHidden(now, false);
+        setHidden(l2, !e.second);
+        if (e.second) {
+          setText(what2, e.second.what + ' ');
+          setText(now2, e.second.now);
+          setHidden(arrow2, e.second.next === null); setHidden(next2, e.second.next === null);
+          if (e.second.next !== null) setText(next2, e.second.next);
+        }
       } else {
         setHidden(what, true); setHidden(now, true); setHidden(arrow, true); setHidden(next, true);
-        setHidden(plain, false);
+        setHidden(plain, false); setHidden(l2, true);
         var txt = L.describe(id, Math.max(1, lvl));
         if (d && d.max > 1 && lvl > 0 && lvl < d.max) txt = 'Now: ' + L.describe(id, lvl) + ' Next: ' + L.describe(id, lvl + 1);
         setText(plain, txt);
@@ -128,13 +139,13 @@
       dk = { t: ui.toggle('Sleep by itself', function (s) { return !!(s.auto && s.auto.sleep === true); }, function (s, v) { L.setAuto(s, 'sleep', !!v); }) };
       var sl = el('label', 'lore-slider');
       var inp = el('input');
-      inp.type = 'range'; inp.min = '25'; inp.max = '300'; inp.step = '25';
+      inp.type = 'range'; inp.min = '50'; inp.max = '300'; inp.step = '25';
       inp.setAttribute('aria-label', 'Sleep when the Legend gain reaches this share of your Legend');
       var val = el('b');
       add(sl, el('span', null, 'when gain ≥'), inp, val);
       inp.addEventListener('input', function () {
         var s = S(); if (!s) return;
-        L.setAuto(s, 'sleepPct', Math.max(25, Math.min(300, Math.round(num(inp.value, 100)))));
+        L.setAuto(s, 'sleepPct', Math.max(50, Math.min(300, Math.round(num(inp.value, 100)))));
         setText(val, L.autoSleepPct(s) + '%');
       });
       dk.sl = sl; dk.inp = inp; dk.val = val;
@@ -180,7 +191,9 @@
   ui.addSection('legend', {
     id: 'lorehead', order: 5,
     key: function (s) { return L.anyAutoOwned(s) ? 'A' : 'a'; },
-    badge: function (s) { return L.anyAffordable(s) ? true : 0; },
+    // a count (like Quests), not a dot: how many Lore the player can learn right now
+    // (capped at the Legend in hand: 3 Legend can buy at most 3 Lore, even if 12 single nodes are within reach)
+    badge: function (s) { var n = Math.min(L.affordableCount(s), Math.floor(num(s.legendPts))); if (n > 0) return n; return L.anyAffordable(s) ? true : 0; },
     build: function (host, s) {
       var c = el('div', 'card lore-head');
       var top = el('div', 'lore-top');
@@ -192,7 +205,7 @@
       add(right, r1, r2, r3);
       add(top, left, right);
       c.appendChild(top);
-      var go = ui.button('wide lore-go', 'Spend it on Lore', function () { goLore(); });
+      var go = ui.button('wide lore-go lore-go-btn', 'Spend it on Lore', function () { goLore(); });
       c.appendChild(go);
       var master = null;
       if (L.anyAutoOwned(s)) {
@@ -202,7 +215,7 @@
       host.appendChild(c);
       return function (st, stats) {
         setText(pts, fmt(st.legendPts));
-        var r1h = 'Earned this Myth <b>' + fmt(st.legend) + '</b>';
+        var r1h = (L.mythGated(st) || num(st.myths) > 0 ? 'Earned this Myth' : 'Legend earned') + ' <b>' + fmt(st.legend) + '</b>';
         if (r1._h !== r1h) { r1._h = r1h; r1.innerHTML = r1h; }
         setText(r2, 'Passive ×' + mx(stats.legendMult) + ' to everything');
         setHidden(r3, !(num(st.myth) > 0));
@@ -210,7 +223,7 @@
         var n = L.affordableCount(st);
         setHidden(go, n < 1);
         setCls(go, 'can', n > 0);
-        if (n > 0) setText(go, n === 1 ? '1 Lore you can learn now' : n + ' Lore you can learn now');
+        if (n > 0) setText(go, 'Learn Lore: ' + n + ' within reach');
         if (master) master.patch(st);
       };
     }
@@ -237,7 +250,8 @@
         return function (s, st) {
           var own = 0;
           for (var i = 0; i < nodes.length; i++) if (L.level(s, nodes[i].id) > 0) own++;
-          setText(head.aside, own + ' of ' + nodes.length + ' learned');
+          var pts = Math.floor(num(s.legendPts));
+          setText(head.aside, (pts > 0 && L.affordableCount(s) > 0 ? fmt(pts) + ' to spend · ' : '') + own + ' of ' + nodes.length + ' learned');
           for (var j = 0; j < parts.length; j++) parts[j](s, st);
         };
       }
@@ -384,18 +398,26 @@
   E.on('gust', function () { est.ready = 0; });
   E.on('sleep', function () {
     var s = S();
-    if (s && !E.flag(s, 'loreCallout')) callout.pending = Date.now() + 1400;
+    if (s && !shownCount(s)) { callout.max = 1; callout.pending = Date.now() + 1400; }
   });
   E.on('lore', function (x) {
     if (!x || x.relic) return;
     if (x.id === 'start_rank' || x.id === 'start_gold' || x.id === 'start_brood') ui.markDirty();
   });
 
-  var callout = { pending: 0, checkedBoot: false };
+  // flag loreCallout = times shown. After a Sleep it shows once; at boot, a player who still has Legend and no
+  // Lore sees it again once more (the player most likely to quit is the one who tapped "Later").
+  var callout = { pending: 0, checkedBoot: false, max: 1 };
+  function shownCount(s) { return Math.floor(num(E.flag(s, 'loreCallout'))); }
+  function skipCallout() {
+    var s = S();
+    callout.pending = 0; callout.checkedBoot = true;
+    if (s) E.setFlag(s, 'loreCallout', Math.max(shownCount(s) + 1, 1));
+  }
   function showCallout() {
     var s = S();
-    if (!s || E.flag(s, 'loreCallout')) return;
-    E.setFlag(s, 'loreCallout', 1);
+    if (!s || shownCount(s) >= callout.max) return;
+    E.setFlag(s, 'loreCallout', shownCount(s) + 1);
     var box = el('div', 'lore-call');
     var cheap = L.nodes.filter(function (n) { var c = L.cost(s, n.id); return c !== null && c <= Math.max(2, num(s.legendPts)) && L.reqMet(s, n.id); })
       .sort(function (a, b) { return L.cost(s, a.id) - L.cost(s, b.id); }).slice(0, 4);
@@ -407,7 +429,7 @@
       var ul = el('ul');
       cheap.forEach(function (n) {
         var li = el('li');
-        add(li, el('b', null, n.name), document.createTextNode(' (' + fmt(L.cost(s, n.id)) + '): ' + L.describe(n.id, 1)));
+        add(li, el('b', null, n.name), document.createTextNode(' (' + fmt(L.cost(s, n.id)) + ' Legend): ' + L.describe(n.id, 1)));
         ul.appendChild(li);
       });
       box.appendChild(ul);
@@ -420,6 +442,23 @@
     ui.sheet(box, { center: true });
   }
 
+  // auto-buy summary: one quiet toast when automation spent a real share of the hoard (at most every 15 s)
+  var autoSum = { n: {}, gold: {}, at: 0 };
+  var AUTO_NAME = { auto_dig: ['Kobold Foremen', 'Digger', 'Diggers'], auto_build: ['Master Builders', 'building', 'buildings'] };
+  function flushAutoBuys(now) {
+    if (autoSum.at && now - autoSum.at < 15000) return;
+    var s = S(), any = false;
+    for (var id in autoSum.n) {
+      if (!Object.prototype.hasOwnProperty.call(autoSum.n, id)) continue;
+      var n = autoSum.n[id], g = autoSum.gold[id], nm = AUTO_NAME[id];
+      if (n > 0 && nm && s && g >= 0.1 * (num(s.gold) + g)) {
+        ui.toast(nm[0], 'bought ' + fmt(n) + ' ' + (n === 1 ? nm[1] : nm[2]) + ' (' + fmt(g) + ' gold).', '');
+        any = true;
+      }
+    }
+    autoSum.n = {}; autoSum.gold = {};
+    if (any) autoSum.at = now;
+  }
   function notesToToasts() {
     var notes = L.drainNotes();
     var chests = 0, cards = 0, best = '', rank = 0, slept = 0, sg = 0;
@@ -433,7 +472,13 @@
         });
       } else if (nt.kind === 'rank') rank = Math.max(rank, nt.data.rank);
       else if (nt.kind === 'sleep') { slept++; sg += num(nt.data.gained); }
+      else if (nt.kind === 'autobuy' && nt.data) {
+        var id = nt.data.id;
+        autoSum.n[id] = num(autoSum.n[id]) + num(nt.data.n);
+        autoSum.gold[id] = num(autoSum.gold[id]) + num(nt.data.gold);
+      }
     });
+    flushAutoBuys(Date.now());
     if (chests) ui.toast('Chest Kobold', 'Opened ' + chests + (chests === 1 ? ' chest: ' : ' chests: ') + cards + ' cards' + (best && best !== 'common' ? ', best ' + best : '') + '.', '');
     if (rank) ui.toast('Old Renown', 'You start this run at Dragon Rank ' + rank + '.', 'gold');
     if (slept) ui.toast('Dream Keeper', 'Took the Long Sleep' + (slept > 1 ? ' ' + slept + ' times' : '') + ': +' + fmt(sg) + ' Legend.', 'gold');
@@ -465,7 +510,7 @@
         callout.checkedBoot = true;
         // a v1 player who already slept: Legend waiting, nothing learned yet
         var learned = Object.keys(s.lore || {}).some(function (k) { return num(s.lore[k]) > 0; });
-        if (!E.flag(s, 'loreCallout') && num(s.legendPts) >= 1 && !learned) callout.pending = now + 2500;
+        if (shownCount(s) < 2 && num(s.legendPts) >= 1 && !learned && L.affordableCount(s) > 0) { callout.max = 2; callout.pending = now + 2500; }
       }
       if (callout.pending && now >= callout.pending && !ui.sheetOpen()) { callout.pending = 0; showCallout(); }
     } catch (e) { /* keep the loop alive */ }
@@ -479,5 +524,5 @@
   if (typeof HOARD.whenReady === 'function') HOARD.whenReady(function () { start(); });
   else setTimeout(start, 0);
 
-  HOARD.uiLore = { showCallout: showCallout, goLore: goLore, estimate: est };
+  HOARD.uiLore = { showCallout: showCallout, skipCallout: skipCallout, goLore: goLore, estimate: est };
 })();

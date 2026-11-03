@@ -2,7 +2,21 @@
 // Usage: node tools/sim-lore.cjs [hours=6] [profile=moderate|active|casual|all]
 //   The player swipes moderately, buys greedily (the v1 sim's shop), buys lore sensibly after each Sleep,
 //   sleeps when the Legend gain >= ~50% of current Legend, and Ascends once the Myth gives 2 (or after waiting 10 min).
-//   env: SEED=n  reproducible Math.random      EMBER=1  also load js/ember.js (and events.js)
+//   profiles: moderate (open, swipes 30 s/min), active (always swiping), casual (10 min every 30 min),
+//             casual5 (5 min of swiping every 30 min, app closed in between: offline() + offline automation)
+//   env: SEED=n  reproducible Math.random      EMBER=1  also load js/ember.js and js/events.js; the sim player then
+//        buys kilns / Fire Breaths (as tools/test-ember.cjs) and plays the event lair (as tools/test-events.cjs) on a
+//        simulated wall clock (HOARD.events._now = sim time), so event cards feed the main game
+//        NOEVENTS=1 with EMBER=1: Ember only (isolates the event cards' effect on pacing)
+//        CURVE=1  instead of profiles: for Legend L = 10..1e12 (lore bought with L points, fresh run) print the minutes of
+//                 active play until a Long Sleep gives +50% / +100% of L (shows whether runs shrink as Legend grows)
+//        SNAP=dir writes the state right after Sleeps 1,2,3,5,8,12,16,20,30,40,60,80,100 to dir/<profile>-s<n>.json
+//        PROBE=file.json (with CURVE=1): from that saved fresh-run state, minutes of active play to +50% / +100% Legend,
+//                 once as saved and once per ablation (no cards / no event cards / no Myth / no relics / no Ember / no
+//                 Power lore / no Legend passive) -- shows which system drives the run length
+//        OFFPROBE=file.json[,...] [OFFH=8]: from a saved state, compare E.offline(OFFH h) against OFFH h of live idle ticks
+//                 (app open, no swiping; automation runs in both), with Dream Keeper off / at 100% / at 25%
+//        AUTOSLEEP=pct  owns-Dream-Keeper players switch it on at pct% (offline auto-sleeps are counted)
 //        QUIET=1 only the summary              TWEAK="..." eval'd after load (e.g. "HOARD.lore.node('greed').base=2")
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
@@ -10,9 +24,12 @@ const root = path.join(__dirname, '..');
 let seed = +process.env.SEED || 777;
 Math.random = function () { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 const files = ['js/data.js', 'js/engine.js', 'js/lore.js'];
-if (process.env.EMBER) files.push('js/events.js', 'js/ember.js');
+if (process.env.EMBER) { if (!process.env.NOEVENTS) files.push('js/events.js'); files.push('js/ember.js'); }
 for (const f of files) vm.runInThisContext(fs.readFileSync(path.join(root, f), 'utf8'), { filename: f });
-const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore;
+const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.ember, EV = H.events;
+const WALL0 = Date.UTC(2026, 10, 3, 8, 0, 0);
+let simT = 0;
+if (EV) EV._now = () => WALL0 + simT * 1000;
 if (process.env.TWEAK) eval(process.env.TWEAK);
 const HOURS = +process.argv[2] || 6;
 const ONLY = process.argv[3] || 'moderate';
@@ -168,11 +185,41 @@ function buyLore(s, bought) {
   }
 }
 
+// ---------------------------------------------------------------- Ember and event players (EMBER=1)
+function buyEmber(s) {
+  if (!X || !X.isAwake(s)) return;
+  for (let g = 0; g < 300; g++) {
+    const open = X.breathList(s).filter(b => !b.bought);
+    const aff = open.filter(b => b.affordable);
+    if (aff.length) { X.buyBreath(s, aff[0].id); continue; }
+    if (open.length && open[0].cost < X.rate(s) * 300) break;
+    let best = -1, bv = 0;
+    for (let k = 0; k < 4; k++) {
+      if (!X.kilnVisible(s, k)) continue;
+      const c = X.kilnCost(s, k, 1).embers;
+      if (c > X.embers(s)) continue;
+      const v = X.kilnEach(s, k) / c;
+      if (v > bv) { bv = v; best = k; }
+    }
+    if (best < 0) break;
+    X.buyKiln(s, best, 1);
+  }
+}
+function playEvents(s, R) {
+  if (!EV || !EV.active(s)) return;
+  while (EV.questInfo(s).done) { EV.claimQuest(s); R.evClaims.push(simT); }
+  while (s.events.chests > 0) EV.openChest(s);
+  const q = EV.QUESTS[s.events.q];
+  if (q && q.kind === 'own' && s.events.units[q.k] < q.n) EV.buyUnit(s, q.k, Math.min(q.n - Math.floor(s.events.units[q.k]), EV.unitMax(s, q.k)));
+  for (let k = 3; k >= 0; k--) { if (q && q.kind === 'own' && k < q.k && s.events.units[q.k] < q.n) continue; EV.buyUnit(s, k, 'max'); }
+}
+const AUTOSLEEP = process.env.AUTOSLEEP ? +process.env.AUTOSLEEP : 0;
+
 // ---------------------------------------------------------------- one profile
 function run(prof) {
   const s = E.newState();
   s.auto.master = true;
-  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {} };
+  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {}, evClaims: [], off: [], warm: {}, wake: null };
   const dt = 0.5, end = HOURS * 3600;
   let pool = 0, poolV = 0, nextTr = 70 + Math.random() * 60, runStart = 0, gustWait = 0, availAt = null;
   let bought = [];
@@ -180,11 +227,19 @@ function run(prof) {
     if (!prof.open(R.T)) { // closed app: jump to the next open moment, offline() once
       let T2 = R.T; while (T2 < end && !prof.open(T2)) T2 += 1;
       const gap = T2 - R.T;
-      if (gap > 0) { E.offline(s, gap); R.T = T2; pool = 0; poolV = 0; }
+      if (gap > 0) {
+        const st0 = E.stats(s), sl0 = s.sleeps, er0 = s.earnedRun, L0 = s.legend;
+        simT = T2;
+        const res = E.offline(s, gap);
+        R.off.push({ t: T2, sec: res.seconds, gold: res.gold, gps0: st0.baseGps, gps1: E.stats(s).baseGps, sleeps: s.sleeps - sl0, legend0: L0, legend1: s.legend, er0 });
+        R.T = T2; pool = 0; poolV = 0;
+        scan(s, 'state', prof.name + '@offline' + T2);
+      }
       buyLore(s, bought);
       continue;
     }
     const swiping = prof.swipe(R.T);
+    simT = R.T;
     s._caveActive = true;
     E.tick(s, dt);
     const st = E.stats(s);
@@ -221,6 +276,12 @@ function run(prof) {
       while (s.chests > 0) E.openChest(s);
       if (prof.buys(R.T)) shop(s, prof);
       buyLore(s, bought);
+      if (AUTOSLEEP && L.level(s, 'auto_sleep') > 0 && !s.auto.sleep) { s.auto.sleep = true; s.auto.sleepPct = AUTOSLEEP; }
+      buyEmber(s); playEvents(s, R);
+      if (X && X.isAwake(s)) {
+        if (R.wake == null) R.wake = R.T;
+        for (const m of [600, 3600, 10800]) if (R.warm[m] == null && R.T - R.wake >= m) R.warm[m] = X.warmth(s);
+      }
       if (L.canAscend(s) && availAt == null) { availAt = R.T; R.mythAvail.push(R.T); }
       const mg = L.mythOnAscend(s);
       if (L.canAscend(s) && (mg >= 2 || R.T - availAt >= 600)) {
@@ -240,6 +301,9 @@ function run(prof) {
         buyLore(s, rec.bought);
         rec.left = s.legendPts;
         R.sleeps.push(rec);
+        if (process.env.SNAP && /^(1|2|3|5|8|12|16|20|30|40|60|80|100)$/.test(String(R.sleeps.length))) {
+          try { fs.mkdirSync(process.env.SNAP, { recursive: true }); fs.writeFileSync(path.join(process.env.SNAP, prof.name + '-s' + R.sleeps.length + '.json'), E.serialize(s)); } catch (e) { /* ignore */ }
+        }
       }
     }
     if (process.env.DEBUGL && s.legend >= +process.env.DEBUGL && !R.dbgDone && isInt(R.T / 5)) {
@@ -266,7 +330,9 @@ const profiles = {
   moderate: { name: 'moderate', share: 0.5, open: () => true, swipe: T => (T % 60) < 30, buys: () => true },
   active: { name: 'active', share: 1, open: () => true, swipe: () => true, buys: () => true },
   // 10 minutes of swiping every 30 minutes, app closed in between (automation runs offline)
-  casual: { name: 'casual', share: 0.3, open: T => (T % 1800) < 600, swipe: () => true, buys: () => true }
+  casual: { name: 'casual', share: 0.3, open: T => (T % 1800) < 600, swipe: () => true, buys: () => true },
+  // 5 minutes of swiping every 30 minutes
+  casual5: { name: 'casual5', share: 0.3, open: T => (T % 1800) < 300, swipe: () => true, buys: () => true }
 };
 
 function report(R) {
@@ -286,12 +352,121 @@ function report(R) {
       f(x.before + x.gain).padStart(12) + ' | ' + String(x.rank).padStart(4) + ' | ' + (x.bought.join(', ') || '(nothing)') + '  (' + f(x.pts) + ' -> ' + f(x.left) + ')');
   });
   const empty = R.sleeps.filter(x => !x.bought.length).length;
-  console.log('Sleeps with no lore buy: ' + empty + '/' + R.sleeps.length);
+  console.log('Sleeps with no lore buy: ' + empty + '/' + R.sleeps.length + (s.sleeps > R.sleeps.length ? '  (+' + (s.sleeps - R.sleeps.length) + ' Dream Keeper sleeps)' : ''));
+  // pacing digest (SPEC-V2 1: Sleep 2 ~20-25 min after Sleep 1, sleeps 3-6 each 12-20 min, Myth 1 ~3-5 h)
+  const runs = R.sleeps.map(x => x.run / 60), med = a => { const b = a.slice().sort((p, q) => p - q); return b.length ? b[Math.floor(b.length / 2)] : null; };
+  const floor = R.sleeps.filter(x => x.run <= MINRUN + 1).length;
+  console.log('pacing: Sleep1 ' + mm(R.sleeps[0] && R.sleeps[0].t) + ' | run2 ' + (runs[1] != null ? runs[1].toFixed(1) + 'm' : '-') +
+    ' | runs3-6 ' + runs.slice(2, 6).map(r => r.toFixed(1)).join('/') + 'm | median run after 6: ' + (med(runs.slice(6)) != null ? med(runs.slice(6)).toFixed(1) + 'm' : '-') +
+    ' | runs at the ' + MINRUN + 's floor: ' + floor + '/' + R.sleeps.length + ' | first at floor: Sleep ' + (R.sleeps.findIndex(x => x.run <= MINRUN + 1) + 1));
+  console.log('first choices: ' + R.sleeps.slice(0, 3).map((x, i) => 'S' + (i + 1) + '[' + (x.bought.join(' ') || '-') + ']').join(' ') +
+    ' | first automation at Sleep ' + (R.sleeps.findIndex(x => x.bought.some(b => /^auto_/.test(b))) + 1));
+  if (X) console.log('Ember: woke at ' + hm(R.wake) + ', warmth +10m x' + (R.warm[600] || 0).toFixed(2) + ', +1h x' + (R.warm[3600] || 0).toFixed(2) + ', +3h x' + (R.warm[10800] || 0).toFixed(2) + ', final x' + X.warmth(s).toFixed(2));
+  if (EV) console.log('Event: quests claimed at (h) ' + (R.evClaims.map(t => (t / 3600).toFixed(1)).join(' ') || '-') + ' | step ' + (s.events ? s.events.q : '-') + '/10');
+  if (R.off.length) {
+    const offG = R.off.reduce((a, o) => a + o.gold, 0), mx = R.off.reduce((a, o) => Math.max(a, o.sec > 0 ? o.gold / o.sec / Math.max(1e-9, o.gps0) : 0), 0);
+    const offS = R.off.reduce((a, o) => a + o.sleeps, 0);
+    console.log('offline: ' + R.off.length + ' returns, gold/s while away up to x' + mx.toFixed(1) + ' of the gold/s at leaving (automation keeps buying), ' + offS + ' Dream Keeper sleeps while away' +
+      (offS ? ', biggest Legend jump away x' + R.off.reduce((a, o) => Math.max(a, o.legend0 > 0 ? o.legend1 / o.legend0 : 1), 1).toFixed(1) : ''));
+  }
   console.log('Myth available at: ' + (R.mythAvail.map(hm).join(', ') || 'never'));
   R.myths.forEach((m, i) => console.log('Ascend ' + (i + 1) + ' at ' + hm(m.t) + ' (+' + m.gained + ' Myth, Legend ' + f(m.legend) + ', waited ' + mm(m.sinceAvail) + ')'));
   if (R.stopped) console.log('stopped: ' + R.stopped);
   console.log('final: legend ' + f(s.legend) + ' (pts ' + f(s.legendPts) + '), myth ' + s.myth + ' (pts ' + s.mythPts + '), sleeps ' + s.sleeps + ', gps ' + f(E.stats(s).baseGps) + ', relics ' + JSON.stringify(s.relics));
 }
 
-for (const n of (ONLY === 'all' ? Object.keys(profiles) : ONLY.split(','))) report(run(profiles[n]));
+function timeTo(s, Lg, prof) {
+  let t = 0, t50 = null, t100 = null, g5 = null;
+  while (t < 3600 && t100 == null) {
+    s._caveActive = true; E.tick(s, 0.5);
+    const st = E.stats(s);
+    E.coinCollected(s, Math.min(4, st.spillRate) * 0.5, 3, 1); E.strokeCollected(s, 300, 3);
+    t += 0.5;
+    if (isInt(t)) {
+      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { E.claimMission(s, i); i = -1; }
+      while (s.chests > 0) E.openChest(s);
+      shop(s, prof);
+      const g = E.canSleep(s) ? E.legendOnSleep(s) : 0;
+      if (t50 == null && g >= 0.5 * Lg) t50 = t;
+      if (t100 == null && g >= Lg) t100 = t;
+      if (t === 300) g5 = g;
+    }
+  }
+  const m = x => (x == null ? '>60' : (x / 60).toFixed(1));
+  return m(t50).padStart(6) + ' | ' + m(t100).padStart(6) + ' | gain@5min ' + (g5 / Lg).toFixed(2) + ' L';
+}
+function probe(file) {
+  const base = fs.readFileSync(file, 'utf8');
+  const s0 = E.deserialize(base);
+  console.log(path.basename(file) + ': Legend ' + f(s0.legend) + ', myth ' + s0.myth + ', cards ' + Object.keys(s0.cards).length + ' (' + Object.values(s0.cards).reduce((a, b) => a + b, 0) + ' copies), warmth x' + (X ? X.warmth(s0).toFixed(2) : '-') + ', lore ' + JSON.stringify(s0.lore));
+  const power = ['greed', 'halls', 'clutches', 'dreams', 'bargain', 'talons', 'magpie'];
+  const abl = {
+    'as saved': s => s,
+    'no cards': s => { s.cards = {}; },
+    'no event cards': s => { for (const k of Object.keys(s.cards)) if (/^ev_/.test(k)) delete s.cards[k]; },
+    'no v1 cards': s => { for (const k of Object.keys(s.cards)) if (!/^ev_/.test(k)) delete s.cards[k]; },
+    'no Myth': s => { s.myth = 0; },
+    'no relics': s => { s.relics = {}; },
+    'no Ember': s => { if (s.ember) s.ember.awake = false; s.lore.wake_ember = 0; },
+    'no Power lore': s => { for (const k of power) s.lore[k] = 0; },
+    'no Legend passive': s => { s._noLegendPassive = true; }
+  };
+  console.log('ablation            | min +50% | +100% | ');
+  for (const k of Object.keys(abl)) {
+    const s = E.deserialize(base); abl[k](s); E.dirty();
+    const Lg = s0.legend;
+    if (s._noLegendPassive && !globalThis.__pnl) { globalThis.__pnl = 1; E.addModSource('probe-nolegend', (q, M) => { if (q._noLegendPassive) M.allMult /= 1 + C.legendPer * q.legend; }); }
+    console.log(k.padEnd(19) + ' | ' + timeTo(s, Lg, profiles.active));
+  }
+}
+function curve() {
+  if (process.env.PROBE) { for (const p of process.env.PROBE.split(',')) probe(p); return; }
+  const prof = profiles.active;
+  console.log('Legend L | lore bought with L | min to +50% L | min to +100% L | Legend gain at 5 min');
+  for (let e = 1; e <= 12; e++) {
+    const Lg = Math.pow(10, e), s = E.newState();
+    s.auto.master = true; s.legend = Lg; s.legendPts = Lg; s.sleeps = 1;
+    const b = []; buyLore(s, b);
+    E.resetRun(s, 'sleep');
+    const lore = Object.keys(s.lore).filter(k => s.lore[k] > 0).length;
+    let t = 0, t50 = null, t100 = null, g5 = null;
+    while (t < 3600 && t100 == null) {
+      s._caveActive = true; E.tick(s, 0.5);
+      const st = E.stats(s);
+      E.coinCollected(s, Math.min(4, st.spillRate) * 0.5, 3, 1); E.strokeCollected(s, 300, 3);
+      t += 0.5;
+      if (isInt(t)) {
+        for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { E.claimMission(s, i); i = -1; }
+        while (s.chests > 0) E.openChest(s);
+        shop(s, prof);
+        const g = E.canSleep(s) ? E.legendOnSleep(s) : 0;
+        if (t50 == null && g >= 0.5 * Lg) t50 = t;
+        if (t100 == null && g >= Lg) t100 = t;
+        if (t === 300) g5 = g;
+      }
+    }
+    console.log(f(Lg).padStart(8) + ' | ' + String(lore).padStart(18) + ' | ' + (t50 == null ? '>60' : (t50 / 60).toFixed(1)).padStart(13) + ' | ' + (t100 == null ? '>60' : (t100 / 60).toFixed(1)).padStart(14) + ' | ' + f(g5 || 0) + ' (' + (g5 / Lg).toFixed(2) + ' L)');
+  }
+}
+function offProbe(file) {
+  const base = fs.readFileSync(file, 'utf8'), sec = (+process.env.OFFH || 8) * 3600;
+  console.log(path.basename(file) + ' (' + sec / 3600 + ' h away)');
+  console.log('Dream Keeper | mode    | earnedRun x | Legend before -> after | sleeps | gold/s after | issues');
+  for (const ds of [0, 100, 25]) {
+    for (const mode of ['offline', 'live']) {
+      const s = E.deserialize(base);
+      s.auto.master = true;
+      if (ds) { s.lore.auto_sleep = 1; s.auto.sleep = true; s.auto.sleepPct = ds; } else s.auto.sleep = false;
+      E.dirty();
+      const er0 = Math.max(1, s.earnedRun), L0 = s.legend, sl0 = s.sleeps;
+      if (mode === 'offline') E.offline(s, sec);
+      else for (let t = 0; t < sec; t++) { s._caveActive = false; E.tick(s, 1); }
+      const nb = bad.length; scan(s, 'state', 'offprobe');
+      console.log(String(ds ? ds + '%' : 'off').padEnd(12) + ' | ' + mode.padEnd(7) + ' | ' + f(s.earnedRun / er0).padStart(11) + ' | ' + (f(L0) + ' -> ' + f(s.legend)).padStart(22) + ' | ' + String(s.sleeps - sl0).padStart(6) + ' | ' + f(E.stats(s).baseGps).padStart(12) + ' | ' + (bad.length - nb));
+    }
+  }
+}
+if (process.env.OFFPROBE) { for (const p of process.env.OFFPROBE.split(',')) offProbe(p); }
+else if (process.env.CURVE) curve();
+else for (const n of (ONLY === 'all' ? Object.keys(profiles) : ONLY.split(','))) report(run(profiles[n]));
 console.log('\nNaN/Infinity/negative issues:', bad.length ? '\n  ' + bad.slice(0, 20).join('\n  ') : 'none');

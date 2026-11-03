@@ -38,7 +38,12 @@
   function clamp01(x) { x = num(x); return x < 0 ? 0 : (x > 1 ? 1 : x); }
   function pad2(x) { return (x < 10 ? '0' : '') + x; }
   function clock(sec) { sec = Math.max(0, Math.ceil(num(sec))); return Math.floor(sec / 60) + ':' + pad2(sec % 60); }
-  function multStr(m) { m = num(m, 1); return (Math.round(m * 100) / 100).toString(); }
+  function multStr(m) {
+    m = num(m, 1);
+    if (m >= 1000 && fmt) return fmt(m);          // ×30.0K, not ×30001
+    if (m >= 100) return String(Math.round(m));
+    return (Math.round(m * 100) / 100).toString();
+  }
   function pos0(x) { return num(x) > 0; }
   function plural(n, one, many) { return Math.floor(num(n)) === 1 ? one : many; }
 
@@ -306,8 +311,18 @@
     if (toastQ.length > 8) toastQ.shift();
     pumpToasts();
   }
+  // toasts sit at the top of the cave; while a sheet is open they move to the top of the screen, above it
+  function placeToasts() {
+    if (!$.toasts) return;
+    var top = '';
+    if (!sheetOpen && $.caveband) {
+      try { var r = $.caveband.getBoundingClientRect(); if (r.height > 0) top = Math.round(r.top + 10) + 'px'; } catch (e) { top = ''; }
+    }
+    if ($.toasts._top !== top) { $.toasts._top = top; $.toasts.style.top = top; }
+  }
   function pumpToasts() {
     if (!$.toasts) return;
+    if (toastQ.length) placeToasts();
     while (toastLive.length < MAX_TOASTS && toastQ.length) {
       var t = toastQ.shift();
       var n = el('div', 'toast' + (t.kind ? ' ' + t.kind : ''));
@@ -346,6 +361,7 @@
     ov.classList.add('open');
     ov._dismiss = o.dismissable !== false;
     sheetOpen = true;
+    placeToasts();
     sheetOnClose = typeof o.onClose === 'function' ? o.onClose : null;
     sheetOnAbort = typeof o.onAbort === 'function' ? o.onAbort : null;
     sheetPatch = typeof o.patch === 'function' ? o.patch : null;
@@ -359,6 +375,7 @@
     if (!sheetOpen) return;
     sheetOpen = false;
     sheetPatch = null;
+    placeToasts();
     $.overlay.classList.remove('open');
     $.overlay.innerHTML = '';
     var cb = sheetOnClose, ab = sheetOnAbort;
@@ -383,9 +400,20 @@
     if (st.frenzyActive) setText($.chipFrenzy, 'Frenzy ' + clock(st.frenzyLeft));
     setHidden($.chipEmber, !st.emberActive);
     if (st.emberActive) setText($.chipEmber, 'Ember ' + clock(st.emberLeft));
-    var lg = num(state.legend);
-    setHidden($.chipLegend, !(lg > 0));
-    if (lg > 0) setText($.chipLegend, 'Legend ×' + multStr(st.legendMult));
+    var lg = num(state.legend), lp = num(state.legendPts);
+    setHidden($.chipLegend, !(lg > 0 || lp > 0));
+    if (lg > 0 || lp > 0) {
+      // "3 to spend" while some Lore is affordable (checked at most 4x/s)
+      var nowMs = Date.now();
+      if (!($.chipLegend._at > nowMs - 250) || $.chipLegend._lp !== lp) {
+        $.chipLegend._at = nowMs; $.chipLegend._lp = lp;
+        var LO = HOARD.lore;
+        $.chipLegend._n = LO && typeof LO.affordableCount === 'function' ? num(LO.affordableCount(state)) : 0;
+      }
+      // short (the chip row is one line at 360px): the spendable Legend when Lore is affordable, else the bonus
+      setText($.chipLegend, $.chipLegend._n > 0 ? fmt(lp) + ' Legend to spend' : 'Legend ×' + multStr(st.legendMult));
+      setCls($.chipLegend, 'spend', $.chipLegend._n > 0);
+    }
     // gust ring
     var g = clamp01(state.gust);
     var off = (GUST_C * (1 - g)).toFixed(1);
@@ -950,7 +978,7 @@
     var c = el('div', 'card');
     add(c,
       el('p', null, 'Curl up on your hoard and sleep for an age. You wake small again, but the tale of your hoard spreads. Every point of Legend adds +10% to gold/s, coin worth and brood output, for good.'),
-      el('p', 'sub', 'You keep treasure cards and chests, and get one bonus chest. Gold, brood, buildings, upgrades and Dragon Rank start over.'));
+      el('p', 'sub', 'Legend is also spent on Lore. You keep Lore, treasure cards, chests and Ember, and get one bonus chest. Gold, brood, buildings, upgrades and Dragon Rank start over.'));
     var pb = bar();
     var pl = el('div', 'bar-label');
     var plL = el('span'), plR = el('span');
@@ -1026,6 +1054,8 @@
     lab.appendChild(el('span', null, label));
     if (sub) lab.appendChild(el('small', 'sub', sub));
     add(r, lab, sw);
+    // the label (the whole row) toggles too, not only the 56x32 switch
+    r.addEventListener('click', function (e) { if (e.target !== sw && !sw.contains(e.target)) sw.click(); });
     function patch(s) {
       var v = !!safe('toggle:' + label, get, [s], false);
       if (sw._v !== v) { sw._v = v; sw.setAttribute('aria-checked', v ? 'true' : 'false'); }
@@ -1149,6 +1179,12 @@
     box.appendChild(br);
     openSheet(box, { center: true });
   }
+  function keptUpgText(s) {
+    var L0 = s && s.lore ? s.lore : {};
+    var a = num(L0.keep_claws) > 0, b = num(L0.keep_broom) > 0;
+    if (!a && !b) return '';
+    return ' (except ' + (a && b ? 'Claws, Scales and Brooms' : a ? 'Claws and Scales' : 'Brooms') + ', which your Lore keeps)';
+  }
   function sleepSheet() {
     var s = S();
     if (!s || !E.canSleep(s)) return;
@@ -1156,8 +1192,8 @@
     var box = el('div');
     add(box,
       el('h3', null, 'Begin the Long Sleep?'),
-      el('p', null, 'You wake with +' + fmt(g) + ' Legend, for ×' + multStr(1 + 0.1 * (num(s.legend) + g)) + ' gold, coins and brood.'),
-      el('p', 'muted', 'Gold, brood, buildings, upgrades and Dragon Rank reset. Cards and chests stay, and you get a bonus chest.'));
+      el('p', null, 'You wake with +' + fmt(g) + ' Legend to spend on Lore, and all gold ×' + multStr(1 + 0.1 * (num(s.legend) + g)) + '.'),
+      el('p', 'muted', 'Gold, brood, buildings, upgrades' + (keptUpgText(s)) + ' and Dragon Rank reset. Lore, cards, chests and Ember stay, and you get a bonus chest.'));
     var br = el('div', 'btn-row');
     add(br,
       button('ghost', 'Stay awake', function () { closeSheet(); }),
@@ -1341,6 +1377,8 @@
         c._el = n; c._cls = '';
       });
     }
+    var ovf = $.chips.scrollWidth > $.chips.clientWidth + 1;
+    if ($.chips._ovf !== ovf) { $.chips._ovf = ovf; setCls($.chips, 'ovf', ovf); }
     for (var i = 0; i < chipDefs.length; i++) {
       var c = chipDefs[i];
       if (!c._el) continue;
@@ -1400,7 +1438,10 @@
       toast(res.title, res.text || '', res.kind === 'frenzy' || res.kind === 'ember' ? 'ember' : 'gold');
     });
     E.on('sleep', function (g) {
-      toast('You wake, small and hungry.', '+' + fmt(g) + ' Legend.', 'gold');
+      // older toasts (pre-Sleep milestones, queued or on screen) must not bury this one
+      toastQ.length = 0;
+      while (toastLive.length) { var tn = toastLive.pop(); if (tn && tn.parentNode) tn.parentNode.removeChild(tn); }
+      toast('You wake, small and hungry.', '+' + fmt(g) + ' Legend to spend on Lore.', 'gold');
     });
     E.on('unlock', function (u) {
       if (!u || !u.name) return;
@@ -1412,7 +1453,7 @@
       if (m.kind === 'building') { for (var i = 0; i < D.buildings.length; i++) if (D.buildings[i].id === m.id) name = D.buildings[i].name; }
       else if (m.kind === 'tier' && D.tiers[m.id]) name = D.tiers[m.id].name;
       if (!name) return;
-      toast(name + ' ×2', 'for owning ' + fmt(m.count) + '.', 'gold');
+      toast(name + ' ×2', 'at ' + fmt(m.count) + ' owned.', 'gold');
     });
   }
 
@@ -1443,8 +1484,20 @@
     var capH = 8;
     try { capH = num(E.stats(s).offlineCapHours, 8); } catch (e) { capH = 8; }
     if (sec >= capH * 3600 - 1) box.appendChild(el('p', 'muted', 'Your hoard can only grow for ' + capH + 'h while you are away.'));
+    var nAff = 0;
+    if (s && num(s.legendPts) >= 1) {
+      var LO = HOARD.lore;
+      nAff = LO && typeof LO.affordableCount === 'function' ? num(LO.affordableCount(s)) : 0;
+      if (nAff > 0) box.appendChild(el('p', 'welcome-legend', 'You have ' + fmt(s.legendPts) + ' Legend to spend on Lore in the Legend tab.'));
+    }
     var br = el('div', 'btn-row');
-    br.appendChild(button('can', 'Back to the hoard', function () { closeSheet(); }));
+    if (nAff > 0 && HOARD.uiLore && typeof HOARD.uiLore.goLore === 'function') {
+      br.appendChild(button('ghost', 'Back to the hoard', function () { closeSheet(); }));
+      br.appendChild(button('can lore-go-btn', 'Spend Legend', function () {
+        if (typeof HOARD.uiLore.skipCallout === 'function') HOARD.uiLore.skipCallout(); // on their way to the Lore already
+        closeSheet(); HOARD.uiLore.goLore();
+      }));
+    } else br.appendChild(button('can', 'Back to the hoard', function () { closeSheet(); }));
     box.appendChild(br);
     openSheet(box, { center: true });
   };
@@ -1471,7 +1524,9 @@
     badge: function (s) { return Math.floor(num(s.chests)); } });
   ui.addTab({ id: 'legend', label: 'Legend', icon: ICONS.legend, order: 60,
     badge: function (s) { return E.canSleep(s) ? true : 0; } });
-  ui.addSection('legend', { id: 'sleep', order: 10, build: buildSleepSection, key: function () { return 'S'; } });
+  // Long Sleep panel: at the top once a Sleep is possible; otherwise after the Lore list (it is mostly prose then)
+  ui.addSection('legend', { id: 'sleep', order: 10, visible: function (s) { return E.canSleep(s); }, build: buildSleepSection, key: function () { return 'S'; } });
+  ui.addSection('legend', { id: 'sleep-later', order: 30, visible: function (s) { return !E.canSleep(s); }, build: buildSleepSection, key: function () { return 'S'; } });
   ui.addSection('legend', { id: 'legendinfo', order: 12, build: buildLegendInfo });
   ui.addSection('legend', { id: 'sofar', order: 90, build: buildSoFar });
   V1_SETTINGS.forEach(function (d) { ui.addSetting(d); });
@@ -1486,7 +1541,9 @@
   };
   ui.markDirty = function () { dirty = true; };
   // ask(title, text, yesLabel, noLabel[, {danger}]) -> Promise<bool>; v1 form ask(..., onYes, onNo) still works
-  ui.ask = function (title, text, yes, no, a5, a6) {
+  // legacy form only: a 7th argument onAbort runs when another sheet replaces this one before the player chose
+  // (neither onYes nor onNo runs then; the caller can ask again later)
+  ui.ask = function (title, text, yes, no, a5, a6, a7) {
     var legacy = typeof a5 === 'function' || typeof a6 === 'function';
     var o = (!legacy && a5 && typeof a5 === 'object') ? a5 : {};
     return new Promise(function (resolve) {
@@ -1506,7 +1563,9 @@
       openSheet(box, {
         center: true, dismissable: legacy ? false : o.dismissable !== false,
         onClose: function () { finish(false); },
-        onAbort: legacy ? null : function () { if (!chosen) finish(false); }
+        onAbort: legacy
+          ? function () { if (chosen || done) return; done = true; if (typeof a7 === 'function') { try { a7(); } catch (e) { /* ignore */ } } resolve(false); }
+          : function () { if (!chosen) finish(false); }
       });
     });
   };
@@ -1550,10 +1609,14 @@
     $.chipFrenzy = document.getElementById('chip-frenzy');
     $.chipEmber = document.getElementById('chip-ember');
     $.chipLegend = document.getElementById('chip-legend');
+    if ($.chipLegend) $.chipLegend.addEventListener('click', function () {
+      if (HOARD.uiLore && typeof HOARD.uiLore.goLore === 'function') HOARD.uiLore.goLore(); else setTab('legend');
+    });
     $.gust = document.getElementById('gust');
     $.gustRing = document.getElementById('gust-ring');
     $.gustSub = document.getElementById('gust-sub');
     $.toasts = document.getElementById('toasts');
+    $.caveband = document.getElementById('caveband');
     $.panel = document.getElementById('panel');
     $.overlay = document.getElementById('overlay');
     $.tabs = document.getElementById('tabs');

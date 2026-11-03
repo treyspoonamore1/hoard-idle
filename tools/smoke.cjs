@@ -207,43 +207,215 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   check(restored.digger === before.digger && restored.gold >= before.gold * 0.99 && restored.cards === before.cards, 'save restored after reload');
   await textOk('after reload');
 
-  // v2 extension API smoke: a 6th tab, a section, a chip, a setting, a row extra, a cave layer, ask()
+  // ================================================================ v2 features
+  const ovOpen = () => page.evaluate(() => document.getElementById('overlay').classList.contains('open'));
+  const ovText = () => page.evaluate(() => document.getElementById('overlay').innerText);
+  const panelText = () => page.evaluate(() => document.getElementById('panel').innerText);
+  const hold = async (loc, ms) => {
+    await loc.scrollIntoViewIfNeeded(); await page.waitForTimeout(150);
+    const b = await loc.boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down(); await page.waitForTimeout(ms); await page.mouse.up();
+    await page.waitForTimeout(250);
+  };
+  const closeOverlay = async () => {
+    for (let i = 0; i < 4 && await ovOpen(); i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(350); }
+  };
+  const loreBtn = (name) => page.locator('#panel .lore-node').filter({ hasText: name }).first().locator('button.buy');
+
+  // --- forced Long Sleep from the Legend tab, then the "Spend your Legend" callout
+  await page.evaluate(() => { const s = HOARD.state; s.earnedRun = Math.max(s.earnedRun, 4.9e7); });
+  await tab('legend');
+  const pre = await page.evaluate(() => ({ sleeps: HOARD.state.sleeps, pts: HOARD.state.legendPts, legend: HOARD.state.legend }));
+  await page.locator('#panel [data-sec="legend.sleep"] button').filter({ hasText: /^Sleep$/ }).click();
+  await page.waitForTimeout(400);
+  await page.locator('#overlay button').filter({ hasText: 'Sleep now' }).click();
+  await page.waitForTimeout(400);
+  const post = await page.evaluate(() => ({ sleeps: HOARD.state.sleeps, pts: HOARD.state.legendPts, legend: HOARD.state.legend, rank: HOARD.state.rank }));
+  check(post.sleeps === pre.sleeps + 1 && post.pts > pre.pts && post.legend > pre.legend && post.rank === 1, 'forced Long Sleep ' + JSON.stringify(pre) + ' -> ' + JSON.stringify(post));
+  await page.waitForTimeout(2200);
+  check(await ovOpen() && /Spend your Legend/.test(await ovText()), '"Spend your Legend" callout after the first Sleep');
+  await page.screenshot({ path: SHOTS + '/smoke-callout.png' });
+  await page.locator('#overlay button').filter({ hasText: 'Show me the Lore' }).click();
+  await page.waitForTimeout(700);
+  check(!(await ovOpen()) && await page.evaluate(() => { const n = document.querySelector('[data-sec^="legend.lore-"]'); if (!n) return false; const r = n.getBoundingClientRect(), p = document.getElementById('panel').getBoundingClientRect(); return r.top < p.bottom && r.bottom > p.top; }), 'callout scrolls to the Lore list');
+  // hold-to-buy a Lore node
+  await page.evaluate(() => { HOARD.state.legendPts = Math.max(HOARD.state.legendPts, 40); });
+  await page.waitForTimeout(300);
+  const lp0 = await page.evaluate(() => HOARD.state.legendPts);
+  await hold(loreBtn('Kobold Foremen'), 250);
+  const lr1 = await page.evaluate(() => ({ dig: HOARD.state.lore.auto_dig || 0, pts: HOARD.state.legendPts }));
+  check(lr1.dig === 1 && Math.abs(lp0 - lr1.pts - 2) < 1e-9, 'Lore purchase: Kobold Foremen (' + lp0 + ' -> ' + lr1.pts + ' Legend)');
+  await hold(loreBtn("Dragon's Greed"), 1200);
+  check(await page.evaluate(() => (HOARD.state.lore.greed || 0) >= 2), "hold-to-buy repeats on a multi-level node (Dragon's Greed lv " + await page.evaluate(() => HOARD.state.lore.greed || 0) + ')');
+  await textOk('legend lore');
+  await page.screenshot({ path: SHOTS + '/smoke-legend-lore.png' });
+
+  // --- automation: Kobold Foremen buys diggers; the Lair row "Auto" switch turns it off and on
+  check(await page.evaluate(() => { const c = document.querySelector('[data-chip="lore-auto"]'); return !!c && !c.hidden && /Auto/.test(c.textContent); }), 'Auto chip in the top bar');
+  await tab('lair');
+  await page.evaluate(() => { HOARD.state.gold = Math.max(HOARD.state.gold, 2e4); });
+  await page.waitForTimeout(1600);
+  const dA = await page.evaluate(() => HOARD.state.buildings.digger);
+  check(dA >= 3, 'Kobold Foremen auto-bought diggers (' + dA + ')');
+  const digSwitch = page.locator('#panel .card').filter({ hasText: 'Kobold Diggers' }).first().locator('.toggle-row .switch');
+  check(await digSwitch.count() === 1 && await digSwitch.isVisible(), 'Auto switch on the Kobold Diggers row');
+  await digSwitch.click(); await page.waitForTimeout(200);
+  check(await page.evaluate(() => HOARD.state.auto['b:digger'] === false && HOARD.lore.buildingAutoOn(HOARD.state, 'digger') === false), 'row Auto switch turns digger automation off');
+  await page.evaluate(() => { HOARD.state.gold += 1e6; });
+  const dB = await page.evaluate(() => HOARD.state.buildings.digger);
+  await page.waitForTimeout(1600);
+  check(await page.evaluate(() => HOARD.state.buildings.digger) === dB, 'no auto-buys while the switch is off');
+  await page.screenshot({ path: SHOTS + '/smoke-lair-auto.png' });
+  await digSwitch.click(); await page.waitForTimeout(1600);
+  check(await page.evaluate(() => HOARD.state.buildings.digger) > dB, 'switch back on resumes auto-buys');
+  // master switch in the Legend header
+  await tab('legend');
+  await page.locator('#panel [data-sec="legend.lorehead"] .switch').first().click(); await page.waitForTimeout(250);
+  check(await page.evaluate(() => !HOARD.lore.masterOn(HOARD.state) && /Auto off/.test(document.querySelector('[data-chip="lore-auto"]').textContent)), 'master Automation switch off -> chip "Auto off"');
+  await page.locator('#panel [data-sec="legend.lorehead"] .switch').first().click(); await page.waitForTimeout(250);
+  check(await page.evaluate(() => HOARD.lore.masterOn(HOARD.state)), 'master Automation switch back on');
+
+  // --- Ember: Wake Ember lore -> 6th tab, buy a kiln
+  check(!(await page.locator('#tabs [data-tab="ember"]').count()), 'no Ember tab before Wake Ember');
+  await page.evaluate(() => { HOARD.state.legendPts += 12; });
+  await page.waitForTimeout(300);
+  await hold(loreBtn('Wake Ember'), 250);
+  await page.waitForTimeout(800);
+  check(await page.evaluate(() => HOARD.state.lore.wake_ember === 1 && HOARD.ember.isAwake(HOARD.state)), 'Wake Ember wakes Ember');
+  check(await page.locator('#tabs [data-tab="ember"]').count() === 1, 'Ember tab appears');
+  await tab('ember');
+  const ek0 = await page.evaluate(() => HOARD.state.ember.kilns[0]);
+  await hold(page.locator('#panel .card button.buy').first(), 250);
+  check(await page.evaluate(() => HOARD.state.ember.kilns[0]) > ek0, 'bought a Coal Kiln with embers');
+  check(/warmth/i.test(await panelText()), 'Ember tab shows warmth');
+  await textOk('ember');
+  await page.screenshot({ path: SHOTS + '/smoke-ember.png' });
+
+  // --- event lair: chip -> full-height sheet, buy a tier-1 unit
+  const chipVis = await page.evaluate(() => { const c = document.querySelector('[data-chip="events"]'); return !!c && !c.hidden && c.textContent; });
+  check(!!chipVis && /Lair|Peak|Ship|Next lair/.test(chipVis), 'event chip visible after a Sleep: "' + chipVis + '"');
+  check(await page.evaluate(() => { const c = document.querySelector('[data-chip="events"]'); return /ev-(volcano|frost|sea|break)|ev-/.test(c.className); }), 'event chip carries its theme class (chip classes hook)');
+  await page.locator('[data-chip="events"]').click(); await page.waitForTimeout(500);
+  check(await page.evaluate(() => !!document.querySelector('#overlay .sheet.ev-sheet')), 'event chip opens the lair sheet');
+  if (await page.evaluate(() => HOARD.events.active(HOARD.state))) {
+    const u0 = await page.evaluate(() => HOARD.state.events.units[0]);
+    await hold(page.locator('#overlay .card.ev-unit button.buy').last(), 250);
+    check(await page.evaluate(() => HOARD.state.events.units[0]) > u0, 'bought a lair tier-1 unit');
+  }
+  await textOk('lair sheet');
+  await page.screenshot({ path: SHOTS + '/smoke-event-sheet.png' });
+  await page.locator('#overlay button').filter({ hasText: 'Close' }).first().click(); await page.waitForTimeout(300);
+  check(!(await ovOpen()), 'lair sheet closes');
+  await tab('quests');
+  check(await page.evaluate(() => !!document.querySelector('[data-sec="quests.eventBanner"]') && document.querySelector('[data-sec="quests.eventBanner"]').innerText.length > 0), 'event banner on the Quests tab');
+
+  // --- settings sheet: sound, volume, stats, play log
+  await page.locator('#btn-settings').click(); await page.waitForTimeout(400);
+  const st2 = await ovText();
+  check(/Sound/.test(st2) && /Volume/.test(st2) && /Stats/.test(st2) && /Play log/.test(st2), 'settings: Sound, Volume, Stats, Play log rows');
+  const snd0 = await page.evaluate(() => HOARD.sound.enabled(HOARD.state));
+  await page.locator('#overlay [data-setting="sound"] .switch').first().click(); await page.waitForTimeout(200);
+  check(await page.evaluate(() => HOARD.sound.enabled(HOARD.state)) === !snd0, 'Sound switch toggles');
+  await page.locator('#overlay [data-setting="sound"] .switch').first().click(); await page.waitForTimeout(200);
+  await page.locator('#overlay input[type=range]').first().fill('70'); await page.waitForTimeout(200);
+  check(await page.evaluate(() => Math.abs(HOARD.state.settings.volume - 0.7) < 1e-9), 'volume slider sets 70%');
+  await page.screenshot({ path: SHOTS + '/smoke-settings-v2.png' });
+  await page.locator('#overlay [data-setting="stats"] button').first().click(); await page.waitForTimeout(400);
+  const stt = await ovText();
+  check(await page.evaluate(() => !!document.querySelector('#overlay .st-stats')) && /Long Sleeps/.test(stt) && /Cards/i.test(stt), 'Stats sheet opens');
+  await textOk('stats');
+  await page.screenshot({ path: SHOTS + '/smoke-stats.png' });
+  await page.locator('#overlay button').filter({ hasText: 'Back' }).first().click(); await page.waitForTimeout(400);
+  check(await page.evaluate(() => !!document.querySelector('#overlay .settings-sheet')), 'Stats Back returns to Settings');
+  check(await page.evaluate(() => HOARD.log.count()) >= 3, 'play log recorded the Sleep and Lore buys');
+  await closeOverlay();
+
+  // --- extension hooks still work for modules: section, chip, row extra, cave layer, sfx hook, ask()
   await page.evaluate(() => {
     const ui = HOARD.ui;
     window.__x = { layer: 0, sfx: [] };
-    ui.addTab({ id: 'xtest', label: 'Ember', icon: ui.icons.ember, order: 50, visible: () => true,
-      build: (host) => { host.appendChild(ui.secHead('Test tab')); const p = ui.el('p', 'hint', 'n=0'); host.appendChild(p); return (s) => ui.setText(p, 'gold ' + HOARD.fmt(s.gold)); },
-      badge: () => 2 });
     ui.addSection('legend', { id: 'xsec', order: 5, build: (host) => { host.appendChild(ui.el('div', 'card', 'Section from a module')); } });
-    ui.addChip({ id: 'xchip', order: 1, visible: () => true, text: () => 'Auto', onPress: () => { window.__x.chip = 1; } });
+    ui.addChip({ id: 'xchip', order: 1, visible: () => true, text: () => 'Test', classes: () => 'xcls', onPress: () => { window.__x.chip = 1; } });
     ui.addRowExtra('building', (slot, id) => { if (id === 'digger') slot.appendChild(ui.el('small', 'sub', 'extra:' + id)); });
-    HOARD.cave.addLayer({ id: 'xlayer', z: -1, draw: (ctx, w, h) => { window.__x.layer++; ctx.fillStyle = 'rgba(232,99,58,0.25)'; ctx.fillRect(4, h - 30, 24, 24); } });
+    HOARD.cave.addLayer({ id: 'xlayer', z: -1, draw: (ctx, w, h) => { window.__x.layer++; } });
     HOARD.cave.addSfxHook((name) => window.__x.sfx.push(name));
+    ui.refresh();
   });
-  await page.setViewportSize({ width: 360, height: 760 });
-  await page.waitForTimeout(600);
-  const tb = await page.evaluate(() => {
-    const bs = Array.from(document.querySelectorAll('#tabs [data-tab]'));
-    return { n: bs.length, ids: bs.map(b => b.getAttribute('data-tab')), clipped: bs.filter(b => { const l = b.querySelector('.t-label'); return l && l.scrollWidth > l.clientWidth + 1; }).length,
-      minW: Math.min(...bs.map(b => b.getBoundingClientRect().width)), sw: document.documentElement.scrollWidth };
-  });
-  check(tb.n === 6 && tb.ids[4] === 'xtest' && tb.clipped === 0 && tb.minW >= 48 && tb.sw <= 360, '6 tabs fit at 360px ' + JSON.stringify(tb));
-  await tab('xtest');
-  check(/Test tab/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'registered tab renders');
-  check(await page.evaluate(() => !document.querySelector('[data-chip="xchip"]').hidden), 'registered chip visible');
+  await page.waitForTimeout(400);
+  check(await page.evaluate(() => { const c = document.querySelector('[data-chip="xchip"]'); return !!c && !c.hidden && c.classList.contains('xcls'); }), 'registered chip visible with its classes');
   await page.locator('[data-chip="xchip"]').click(); await page.waitForTimeout(100);
   check(await page.evaluate(() => window.__x.chip === 1), 'chip onPress fires');
-  await page.screenshot({ path: SHOTS + '/smoke-6tabs-360.png' });
   await tab('legend');
-  check(/Section from a module/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'registered legend section renders');
+  check(/Section from a module/.test(await panelText()), 'registered legend section renders');
   await tab('lair');
-  check(/extra:digger/.test(await page.evaluate(() => document.getElementById('panel').innerText)), 'row extra renders in Lair');
+  check(/extra:digger/.test(await panelText()), 'row extra renders in Lair');
   check(await page.evaluate(() => window.__x.layer > 5), 'cave layer draws');
+  check(await page.evaluate(() => typeof HOARD.cave.coinCount() === 'number'), 'cave.coinCount() exposed');
   const askP = page.evaluate(() => HOARD.ui.ask('Test?', 'Pick one', 'Yes', 'No'));
   await page.waitForTimeout(300);
   await page.locator('#overlay button').filter({ hasText: 'Yes' }).click();
   check((await askP) === true, 'ui.ask resolves true on Yes');
+  await page.evaluate(() => { HOARD.ui.removeSection('legend', 'xsec'); });
+
+  // --- 6 real tabs at 360 px, every tab rendered there
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.waitForTimeout(600);
+  const tb = await page.evaluate(() => {
+    const bs = Array.from(document.querySelectorAll('#tabs [data-tab]')).filter(b => !b.hidden);
+    return { n: bs.length, ids: bs.map(b => b.getAttribute('data-tab')), clipped: bs.filter(b => { const l = b.querySelector('.t-label'); return l && l.scrollWidth > l.clientWidth + 1; }).length,
+      minW: Math.min(...bs.map(b => b.getBoundingClientRect().width)), sw: document.documentElement.scrollWidth };
+  });
+  check(tb.n === 6 && tb.ids.join() === 'lair,brood,quests,hoard,legend,ember' && tb.clipped === 0 && tb.minW >= 48 && tb.sw <= 360, '6 tabs fit at 360px ' + JSON.stringify(tb));
+  for (const t of tb.ids) {
+    await tab(t);
+    await textOk(t + ' @360');
+    await page.screenshot({ path: SHOTS + '/smoke360-' + t + '.png' });
+  }
   await page.setViewportSize({ width: 412, height: 915 });
+
+  // ================================================================ v1 fixtures -> hoard.save.v1 -> load + reload
+  const FIX = path.join(__dirname, 'fixtures');
+  for (const f of fs.readdirSync(FIX).filter(n => /^v1-.*\.json$/.test(n)).sort()) {
+    const raw = fs.readFileSync(path.join(FIX, f), 'utf8');
+    const want = JSON.parse(raw);
+    const fctx = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+    const fp = await fctx.newPage();
+    const ferr = [];
+    fp.on('console', m => { if (m.type() === 'error') ferr.push('console: ' + m.text()); });
+    fp.on('pageerror', e => ferr.push('pageerror: ' + (e.stack || e.message)));
+    await fctx.addInitScript((r) => {
+      try { if (!sessionStorage.getItem('__fx')) { localStorage.clear(); localStorage.setItem('hoard.save.v1', r); sessionStorage.setItem('__fx', '1'); } } catch (e) {}
+    }, raw);
+    const grab = () => fp.evaluate(() => { const s = HOARD.state; return { v: s.v, gold: s.gold, buildings: s.buildings, tiers: s.tiers, cards: s.cards, legend: s.legend, legendPts: s.legendPts, rank: s.rank, sleeps: s.sleeps,
+      backup: (() => { try { return localStorage.getItem('hoard.save.backup.v1'); } catch (e) { return null; } })() }; });
+    const same = (g, lbl) => {
+      const bOk = Object.keys(want.buildings).every(k => g.buildings[k] === want.buildings[k]);
+      const tOk = want.tiers.every((x, i) => g.tiers[i] >= x - 1e-6);
+      const cOk = Object.keys(want.cards).every(k => g.cards[k] === want.cards[k]);
+      check(g.v === 2 && g.gold >= want.gold - 1e-6 && bOk && tOk && cOk && g.legend === want.legend && g.legendPts === g.legend && g.rank === want.rank && g.sleeps === want.sleeps,
+        f + ' ' + lbl + ': v' + g.v + ' rank ' + g.rank + ' legend ' + g.legend + ' pts ' + g.legendPts + ' buildings ' + (bOk ? 'ok' : JSON.stringify(g.buildings)) + ' tiers ' + (tOk ? 'ok' : 'BAD') + ' cards ' + (cOk ? 'ok' : 'BAD'));
+    };
+    await fp.goto(URL);
+    await fp.waitForFunction(() => window.HOARD && window.HOARD.state && window.HOARD.state.time > 0.2);
+    await fp.waitForTimeout(400);
+    const g1 = await grab();
+    same(g1, 'loaded');
+    check(g1.backup === raw, f + ' raw v1 copy in hoard.save.backup.v1');
+    await fp.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('pagehide')); });
+    await fp.reload();
+    await fp.waitForFunction(() => window.HOARD && window.HOARD.state && window.HOARD.state.time > 0.2);
+    await fp.waitForTimeout(400);
+    same(await grab(), 'reloaded');
+    const bad = (await fp.evaluate(() => document.body.innerText)).match(/.{0,30}\b(NaN|undefined|Infinity)\b.{0,30}/);
+    check(!bad, f + ' no NaN/undefined text' + (bad ? ' -> "' + bad[0] + '"' : ''));
+    check(ferr.length === 0, f + ' no console/page errors' + (ferr.length ? ':\n  ' + ferr.join('\n  ') : ''));
+    if (f === 'v1-postsleep.json') {
+      await fp.waitForTimeout(2600);
+      check(/Spend your Legend/.test(await fp.evaluate(() => document.getElementById('overlay').innerText)), f + ' v1 player with unspent Legend gets the Lore callout');
+    }
+    await fctx.close();
+  }
 
   // let it run a bit to catch tick-time errors
   await page.waitForTimeout(1500);

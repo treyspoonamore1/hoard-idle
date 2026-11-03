@@ -73,7 +73,7 @@ function live(s, sec, dt) { dt = dt || 1; for (let t = 0; t < sec; t += dt) { T 
     check(typeof txt === 'string' && txt.length > 5 && !/NaN|undefined/.test(txt), c.id + ' text: ' + txt);
   });
   const t = clone(base); t.cards.ev_obsidianheart = 1;
-  check(near(E.stats(E.deserialize(t)).gps, s0.gps * 1.3, 1e-9), 'Obsidian Heart Lv1 = all gold x1.3');
+  check(near(E.stats(E.deserialize(t)).gps, s0.gps * 1.2, 1e-9), 'Obsidian Heart Lv1 = all gold x1.2');
   // without event cards owned, stats are identical to the engine without the module
   const p = plain.engine.deserialize(E.serialize(base));
   check(near(E.stats(base).gps, plain.engine.stats(p).gps) && near(E.stats(base).coinWorth, plain.engine.stats(p).coinWorth), 'no event cards: stats identical to the engine without events.js');

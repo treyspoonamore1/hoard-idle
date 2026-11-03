@@ -257,8 +257,10 @@
       if (s.myths === undefined) s.myths = 0;
       if (!isObj(s.flags)) s.flags = {};
       if (!isObj(s.auto)) s.auto = {};
-      if (isObj(s.stat)) { if (s.stat.playActive === undefined) s.stat.playActive = 0; if (s.stat.fastestSleep === undefined) s.stat.fastestSleep = 0; }
-      if (isObj(s.run) && s.run.playActive === undefined) s.run.playActive = 0;
+      // v1 did not track active play time; game time (s.time) is the closest estimate
+      var t0 = pos(s.time);
+      if (isObj(s.stat)) { if (s.stat.playActive === undefined) s.stat.playActive = t0; if (s.stat.fastestSleep === undefined) s.stat.fastestSleep = 0; }
+      if (isObj(s.run) && s.run.playActive === undefined) s.run.playActive = fin(s.sleeps, 0) >= 1 ? 0 : t0;
       s.v = 2;
     }
   };
@@ -583,6 +585,23 @@
     var n = 0, m = D.tierMilestones;
     for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
     return n;
+  }
+  // owned count at which the n-th milestone (1-based) is reached
+  function milestoneAt(kind, n) {
+    var m = kind === 'building' ? D.buildingMilestones : D.tierMilestones;
+    if (n <= m.length) return m[Math.max(0, n - 1)];
+    return kind === 'building' ? 200 + (n - m.length) * 100 : m[m.length - 1];
+  }
+  // emits 'milestone' only when a milestone is passed for the first time this run (a tier spent on buildings
+  // and bought back must not announce the same milestone again). Marks live in state.run (reset by Sleep).
+  function milestoneCheck(state, kind, id, before, after) {
+    var c = kind === 'building' ? milestoneCountBuilding(after) : milestoneCountTier(after);
+    if (!(c > before) || !isObj(state.run)) return;
+    var key = (kind === 'building' ? 'msb_' : 'mst_') + id;
+    var hw = Math.floor(pos(state.run[key]));
+    if (c <= hw) return;
+    state.run[key] = c;
+    emit('milestone', { kind: kind, id: id, count: milestoneAt(kind, c), owned: after }, state);
   }
   function nextMilestone(kind, owned) {
     owned = Math.floor(fin(owned, 0));
@@ -935,7 +954,7 @@
     if (b.minionTier >= 0) state.tiers[b.minionTier] = pos(state.tiers[b.minionTier] - minionSum(b.minions, owned, n));
     state.buildings[id] = owned + n;
     dirty();
-    if (milestoneCountBuilding(owned + n) > before) emit('milestone', { kind: 'building', id: id, count: owned + n }, state);
+    milestoneCheck(state, 'building', id, before, owned + n);
     emit('buy', { kind: 'building', id: id, n: n, auto: autoDepth > 0 }, state);
     return true;
   }
@@ -979,7 +998,7 @@
     state.tiers[i] = cl(pos(state.tiers[i]) + n);
     dirty();
     var cnt = Math.floor(state.tiers[i]);
-    if (milestoneCountTier(cnt) > before) emit('milestone', { kind: 'tier', id: i, count: cnt }, state);
+    milestoneCheck(state, 'tier', i, before, cnt);
     emit('buy', { kind: 'tier', id: i, n: n, auto: autoDepth > 0 }, state);
     return true;
   }
@@ -1285,7 +1304,9 @@
   // ================================================================ prestige
   function legendOnSleep(state) {
     if (!ok(state)) return 0;
-    var g = Math.floor(Math.sqrt(pos(state.earnedRun) / C.legendDiv) * stats(state).M.legendGainMult);
+    // v2: cube-root gain (v1 used sqrt(earnedRun / 1e6)). Same 3 Legend at the 1e7 minimum, but gold per run
+    // grows roughly with Legend^2, so a sqrt gain gave each Sleep a fixed share of Legend and runs collapsed.
+    var g = Math.floor(fin(C.legendK, 3.2) * Math.cbrt(pos(state.earnedRun) / C.sleepReq) * stats(state).M.legendGainMult + 1e-9);
     return Math.max(0, fin(g, 0));
   }
   function canSleep(state) { return ok(state) && pos(state.earnedRun) >= C.sleepReq; }
@@ -1378,7 +1399,7 @@
       var before = Math.floor(x[j]);
       var nv = cl(x[j] + gained[j]);
       state.tiers[j] = nv;
-      if (milestoneCountTier(Math.floor(nv)) > milestoneCountTier(before)) emit('milestone', { kind: 'tier', id: j, count: Math.floor(nv) }, state);
+      milestoneCheck(state, 'tier', j, milestoneCountTier(before), Math.floor(nv));
     }
     return gained;
   }

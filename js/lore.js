@@ -31,16 +31,16 @@
   var NODES = [
     // ---- Automation (kept through Myth)
     { id: 'auto_dig', branch: 'auto', name: 'Kobold Foremen', costs: [2], toggle: true,
-      desc: function () { return 'Buys Kobold Diggers for you when they are cheap.'; } },
-    { id: 'auto_build', branch: 'auto', name: 'Master Builders', costs: [8], req: 'auto_dig', toggle: true,
-      desc: function () { return 'Buys every unlocked building, best value first. Switch rows off in Lair.'; } },
-    { id: 'auto_brood', branch: 'auto', name: 'Brood Matron', costs: [5], toggle: true,
+      desc: function () { return 'Buys a Kobold Digger whenever one costs under 10% of your gold.'; } },
+    { id: 'auto_build', branch: 'auto', name: 'Master Builders', costs: [6], req: 'auto_dig', toggle: true,
+      desc: function () { return 'Buys every unlocked building as gold comes in, best value first. Switch rows off in Lair.'; } },
+    { id: 'auto_brood', branch: 'auto', name: 'Brood Matron', costs: [4], toggle: true,
       desc: function () { return 'Buys minions with up to half of your gold/s. Switch tiers off in Brood.'; } },
-    { id: 'auto_quest', branch: 'auto', name: 'Quest Scribe', costs: [4], toggle: true,
+    { id: 'auto_quest', branch: 'auto', name: 'Quest Scribe', costs: [2], toggle: true,
       desc: function () { return 'Claims finished quests for you.'; } },
-    { id: 'auto_chest', branch: 'auto', name: 'Chest Kobold', costs: [3], req: 'auto_quest', toggle: true,
+    { id: 'auto_chest', branch: 'auto', name: 'Chest Kobold', costs: [2], req: 'auto_quest', toggle: true,
       desc: function () { return 'Opens chests for you and tells you what was inside.'; } },
-    { id: 'auto_gust', branch: 'auto', name: 'Restless Wings', costs: [6], toggle: true,
+    { id: 'auto_gust', branch: 'auto', name: 'Restless Wings', costs: [3], toggle: true,
       desc: function () { return 'Wing Gust fires by itself once charged and 8 coins are out (or after 10s).'; } },
     { id: 'auto_upg', branch: 'auto', name: 'Lair Steward', costs: [12], req: 'auto_build', toggle: true,
       desc: function () { return 'Buys Lair upgrades as soon as you can afford them.'; } },
@@ -73,22 +73,24 @@
       what: 'Streak speed', val: function (lv) { return x(TALON_RAMP[Math.min(3, lv)]); },
       desc: function (lv) { return 'Streaks build ' + x(TALON_RAMP[Math.min(3, lv)]) + ' faster; ×8 streaks always open.'; } },
     { id: 'magpie', branch: 'power', name: 'Magpie Instinct', base: 3, growth: 4, max: 4,
-      what: 'Treasures / Frenzy', val: function (lv) { return '+' + (25 * lv) + '% / +' + (8 * lv) + 's'; },
+      what: 'Treasures', val: function (lv) { return '+' + (25 * lv) + '%'; },
+      what2: 'Gold Frenzy', val2: function (lv) { return '+' + (8 * lv) + 's'; },
       desc: function (lv) { return 'Treasures +' + (25 * lv) + '% more often; Gold Frenzy +' + (8 * lv) + 's.'; } },
     { id: 'dreams', branch: 'power', name: 'Deep Dreams', base: 6, growth: 4, max: 6,
       what: 'Legend per Long Sleep', val: function (lv) { return '+' + (20 * lv) + '%'; },
       desc: function (lv) { return 'Legend from each Long Sleep +' + (20 * lv) + '%.'; } },
     { id: 'watch', branch: 'power', name: 'Long Watch', base: 2, growth: 4, max: 4,
-      what: 'Away time / gold while away', val: function (lv) { return (8 + 4 * lv) + 'h / ' + x(Math.pow(1.15, lv)); },
+      what: 'Away time', val: function (lv) { return (8 + 4 * lv) + 'h'; },
+      what2: 'Gold while away', val2: function (lv) { return x(Math.pow(1.15, lv)); },
       desc: function (lv) { return 'Away time counts up to ' + (8 + 4 * lv) + 'h; gold while away ' + x(Math.pow(1.15, lv)) + '.'; } },
     { id: 'bargain', branch: 'power', name: 'Kobold Haggling', base: 4, growth: 4, max: 5,
       what: 'Building and minion gold cost', val: function (lv) { return lv ? '-' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '%' : 'full price'; },
       desc: function (lv) { return 'Buildings and minions cost ' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '% less gold.'; } },
     // ---- Unlocks (kept through Myth: Ember stays awake, the Myth gate stays open)
     { id: 'wake_ember', branch: 'unlock', name: 'Wake Ember', costs: [12],
-      desc: function () { return 'Wake Ember, a second dragon with a hoard of her own.'; } },
+      desc: function () { return 'A second dragon whose kilns warm all your gold.'; } },
     { id: 'myth_gate', branch: 'unlock', name: 'The First Myth', costs: [40],
-      desc: function () { return 'Open the Myth: Ascend from ' + fmt(MYTH.minLegend) + ' Legend for Myth and Relics.'; } }
+      desc: function () { return 'Unlocks Ascend: once you earn ' + fmt(MYTH.minLegend) + ' Legend in one Myth, trade it for Myth and Relics.'; } }
   ];
   var RELICS = [
     { id: 'r_legend', name: 'Saga Stone', costs: [1, 3, 9],
@@ -110,7 +112,7 @@
   //   formula 'sqrt' (SPEC-V2 literal with need 150, k 3.75): gained = floor(sqrt(legend * k / need))
   // The Legend economy is super-linear late in a Myth (Legend gain grows with Legend), so a sqrt Myth gain
   // would feed 1.5^myth back into it and run away; the log gain keeps each Ascend worth a few Myth.
-  var MYTH = { gate: 'myth_gate', formula: 'log', minLegend: 1e5, grow: 30, step: 3, k: 3.75, prodPer: 1.5, goldOnly: true };
+  var MYTH = { gate: 'myth_gate', formula: 'log', minLegend: 2e4, grow: 30, step: 3, k: 3.75, prodPer: 1.5, goldOnly: true };
 
   var NIDX = {}, RIDX = {};
   NODES.forEach(function (n) { n.max = n.costs ? n.costs.length : n.max; NIDX[n.id] = n; });
@@ -280,13 +282,16 @@
     });
     // unknown keys (future nodes) are kept as they are
     for (var k2 in s.lore) if (Object.prototype.hasOwnProperty.call(s.lore, k2) && !NIDX[k2]) nl[k2] = s.lore[k2];
-    s.lore = nl;
-    s.legend = 0;
-    s.legendPts = 0;
-    s.myth = cl(pos(s.myth) + gained);
-    s.mythPts = cl(pos(s.mythPts) + gained);
-    s.myths = Math.floor(pos(s.myths)) + 1;
-    E.resetRun(s, 'ascend');
+    // the reset happens inside resetRun's `between`, so its pre-reset snapshot (sleep hooks, play log) still
+    // holds the Myth-ending lore and Legend; the lore sleep hook runs after it, so head starts still apply
+    E.resetRun(s, 'ascend', function (st) {
+      st.lore = nl;
+      st.legend = 0;
+      st.legendPts = 0;
+      st.myth = cl(pos(st.myth) + gained);
+      st.mythPts = cl(pos(st.mythPts) + gained);
+      st.myths = Math.floor(pos(st.myths)) + 1;
+    });
     E.dirty();
     E.emit('myth', gained, s);
     return gained;
@@ -305,7 +310,7 @@
   function autoSleepOn(s) { return lv(s, 'auto_sleep') > 0 && masterOn(s) && isObj(s.auto) && s.auto.sleep === true; }
   function autoSleepPct(s) {
     var p = isObj(s && s.auto) ? fin(s.auto.sleepPct, 100) : 100;
-    return Math.max(25, Math.min(300, Math.round(p)));
+    return Math.max(50, Math.min(300, Math.round(p)));
   }
   function setAuto(s, key, v) {
     if (!s || typeof key !== 'string') return;
@@ -321,7 +326,15 @@
 
   var lastManual = -1e9, lastManualState = null, acc = 0, broodBudget = 0, budgetState = null;
   var notes = [];
-  function note(kind, data) { notes.push({ kind: kind, data: data }); if (notes.length > 20) notes.shift(); }
+  function note(kind, data) {
+    // repeated auto-buys merge into one note so the UI can summarise them
+    var last = notes.length ? notes[notes.length - 1] : null;
+    if (kind === 'autobuy' && last && last.kind === 'autobuy' && last.data.id === data.id) {
+      last.data.n += data.n; last.data.gold = cl(last.data.gold + data.gold); return;
+    }
+    notes.push({ kind: kind, data: data });
+    if (notes.length > 40) notes.shift();
+  }
   // a buy by the player (not inside E.automated) pauses the auto-buyers for 1.5 s on that state
   E.on('buy', function (d, s) {
     if ((d && d.auto) || E.inAuto() || !s) return;
@@ -342,14 +355,17 @@
     if (!full) {
       // Kobold Foremen: diggers while one costs at most 10% of the gold on hand
       if (!buildingAutoOn(s, 'digger')) return 0;
+      var spentF = 0;
       for (var g = 0; g < cap; g++) {
         var c0 = E.buildingCost(s, 'digger', 1);
         if (!(c0.gold > 0) || c0.gold > 0.1 * pos(s.gold) || !E.buyBuilding(s, 'digger', 1)) break;
-        did++;
+        did++; spentF += c0.gold;
       }
+      if (did && !offline) note('autobuy', { id: 'auto_dig', n: did, gold: spentF });
       return did;
     }
     // Master Builders: best payback first (time to afford + cost / gain); waits (saves up) for the best one
+    var spentB = 0;
     for (var k = 0; k < cap; k++) {
       var st = E.stats(s), inc = Math.max(1e-9, st.baseGps), best = null;
       for (var i = 0; i < D.buildings.length; i++) {
@@ -363,8 +379,9 @@
         if (!best || score < best.score) best = { id: id, score: score, cost: c.gold };
       }
       if (!best || best.cost > pos(s.gold) || !E.buyBuilding(s, best.id, 1)) break;
-      did++;
+      did++; spentB += best.cost;
     }
+    if (did && !offline) note('autobuy', { id: 'auto_build', n: did, gold: spentB });
     return did;
   }
   // minions needed soon by buildings that use tier t (two more of each)
@@ -505,7 +522,11 @@
       var d = NIDX[id] || RIDX[id];
       if (!d || typeof d.val !== 'function') return null;
       var l = NIDX[id] ? lv(s, id) : rlv(s, id);
-      try { return { what: d.what, now: d.val(l), next: l < d.max ? d.val(l + 1) : null }; } catch (e) { return null; }
+      try {
+        var e = { what: d.what, now: d.val(l), next: l < d.max ? d.val(l + 1) : null };
+        if (typeof d.val2 === 'function') e.second = { what: d.what2, now: d.val2(l), next: l < d.max ? d.val2(l + 1) : null };
+        return e;
+      } catch (e2) { return null; }
     },
     describe: function (id, l) { var d = NIDX[id] || RIDX[id]; if (!d) return ''; try { return d.desc.call(d, Math.max(1, l)); } catch (e) { return ''; } },
     // Myth

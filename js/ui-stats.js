@@ -296,7 +296,7 @@
     '.st-h{padding:7px 12px;background:rgba(0,0,0,.18)}' +
     '.st-h span{font-size:12px;color:var(--ink-faint);letter-spacing:.04em;text-transform:uppercase}' +
     '.st-h span:not(:first-child),.st-r b{text-align:right}' +
-    '.st-name{font-weight:700;font-size:15px;color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.st-name{font-weight:700;font-size:15px;line-height:1.25;color:var(--ink);min-width:0;overflow-wrap:anywhere}' +
     '.st-r b{font-variant-numeric:tabular-nums;font-size:15px;color:var(--ink-faint);font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
     '.st-r b.up{color:var(--gold);font-weight:700}' +
     '.st-r b.down{color:var(--moss)}' +

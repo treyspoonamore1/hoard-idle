@@ -12,6 +12,7 @@
   var E = HOARD.engine;
   var LS_KEY = 'hoard.save.v1';            // never changes (v2 saves live here too)
   var BACKUP_KEY = 'hoard.save.backup.v1';  // pre-migration copy, written once
+  var BACKUP_CLOUD_KEY = 'hoard.save.backup.v1.cloud'; // pre-migration copy of an adopted older-version cloud save, once
   var LOCAL_MS = 10000, CLOUD_MS = 60000;
   var OFFLINE_MODAL_MIN = 60;
 
@@ -31,6 +32,20 @@
   var bootedFromHot = false;
   var actedSinceBoot = false; // any pointer/key input since boot: never silently replace the live state after that
   var cloudTries = 0, CLOUD_TRIES = 3, CLOUD_RETRY_MS = 30000, ADOPT_MARGIN_MS = 2000;
+  // pending "newer cloud save" question: { take, keep, at, reshow }. It stays pending (cloud writes off) until the
+  // player answers; if another sheet replaces it, it is asked again once no sheet is open.
+  var cloudAsk = null;
+  function showCloudAsk() {
+    var a = cloudAsk;
+    if (!a || !HOARD.ui || !HOARD.ui.ask) return;
+    a.reshow = false;
+    HOARD.ui.ask('A newer save is in the cloud',
+      'Your cloud save is newer than this device (' + new Date(a.at).toLocaleString() + '). Load it, or keep playing this one and overwrite the cloud?',
+      'Load cloud save', 'Keep this one',
+      function () { if (cloudAsk !== a) return; cloudAsk = null; a.take(); },
+      function () { if (cloudAsk !== a) return; cloudAsk = null; a.keep(); },
+      function () { if (cloudAsk === a) a.reshow = true; });
+  }
 
   function getState() { return state; }
   // debugging / test hook: live state (read-only accessor)
@@ -49,6 +64,16 @@
       if (!(v > 0) || v >= (E.version || 1)) return;
       if (localStorage.getItem(BACKUP_KEY)) return;
       localStorage.setItem(BACKUP_KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
+    } catch (e) { /* ignore */ }
+  }
+  // an older-version cloud save that gets adopted keeps its own backup (the local backup may hold an older save)
+  function backupCloudOnce(raw) {
+    if (!raw) return;
+    try {
+      var v = E.saveVersion ? E.saveVersion(raw) : 0;
+      if (!(v > 0) || v >= (E.version || 1)) return;
+      if (localStorage.getItem(BACKUP_CLOUD_KEY)) return;
+      localStorage.setItem(BACKUP_CLOUD_KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
     } catch (e) { /* ignore */ }
   }
   function logCall(name, a, b) { try { if (HOARD.log && typeof HOARD.log[name] === 'function') HOARD.log[name](a, b); } catch (e) { log(e); } }
@@ -140,6 +165,7 @@
         var take = function () {
           stateSwapCount++;
           backupOnce(data.json);
+          backupCloudOnce(data.json);
           adopt(E.deserialize(data.json), true);
           logCall('stateReplaced', 'cloud');
           saveLocal();
@@ -149,11 +175,9 @@
         if (!actedSinceBoot && swapAtStart === stateSwapCount) { take(); return; }
         // the player already played on this copy: ask, and keep cloud writes off until they choose
         var keep = function () { cloudDoc = doc; saveCloud(true); };
-        if (HOARD.ui && HOARD.ui.ask) {
-          HOARD.ui.ask('A newer save is in the cloud',
-            'Your cloud save is newer than this device (' + new Date(cloudAt).toLocaleString() + '). Load it, or keep playing this one and overwrite the cloud?',
-            'Load cloud save', 'Keep this one', take, keep);
-        }
+        cloudAsk = { take: take, keep: keep, at: cloudAt, reshow: false };
+        // never shown over another sheet (welcome back, a chest, the Lore callout): it waits for them
+        if (HOARD.ui && HOARD.ui.sheetOpen && HOARD.ui.sheetOpen()) cloudAsk.reshow = true; else showCloudAsk();
       } catch (e) {
         log(e);
         if (++cloudTries < CLOUD_TRIES) setTimeout(connectCloud, CLOUD_RETRY_MS);
@@ -192,6 +216,7 @@
     if (dt > 1) dt = 1;
     if (!state) return;
     if (dt > 0) { try { E.tick(state, dt); } catch (e) { log(e); } }
+    if (cloudAsk && cloudAsk.reshow) { try { if (!HOARD.ui.sheetOpen()) showCloudAsk(); } catch (e) { log(e); } }
     try { if (HOARD.cave && HOARD.cave.frame) HOARD.cave.frame(dt); } catch (e) { log(e); }
     try { if (HOARD.ui && HOARD.ui.frame) HOARD.ui.frame(dt); } catch (e) { log(e); }
   }
