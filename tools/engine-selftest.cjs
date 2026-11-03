@@ -23,6 +23,18 @@ check(D.cards.length === 20, '20 cards');
 check(H.fmt(0) === '0' && H.fmt(5.5) === '5.5' && H.fmt(999) === '999' && H.fmt(1234) === '1.23K' && H.fmt(12345) === '12.3K' && H.fmt(123456) === '123K' && H.fmt(1.5e6) === '1.50M' && H.fmt(2e36) === '2.00e36', 'fmt ' + [H.fmt(1234), H.fmt(1.5e6), H.fmt(2e36), H.fmt(999999)]);
 check(H.fmtTime(8040) === '2h 14m' && H.fmtTime(185) === '3m 05s' && H.fmtTime(12) === '12s', 'fmtTime');
 check(H.fmtRate(4500) === '4.50K/s', 'fmtRate');
+// rates round (and keep 2 significant digits under 1): a 0.15/s Digger must not read "0.1/s"
+check(H.fmtRate(0.15) === '0.15/s' && H.fmtRate(0.75) === '0.75/s' && H.fmtRate(0.05) === '0.05/s' && H.fmtRate(25.9) === '26/s' && H.fmtRate(4.26) === '4.3/s' && H.fmtRate(0) === '0/s' && H.fmtRate(NaN) === '0/s',
+  'fmtRate small: ' + [0.15, 0.75, 0.05, 25.9, 4.26].map(H.fmtRate).join(' '));
+// nestIn: exact chain projection (60 s, no milestone crossed) matches ticking; a projected buy grows it; pure
+{
+  let s = E.newState(); s.rank = 6; s.tiers = [1e6, 1000, 50, 2, 0]; s = E.deserialize(E.serialize(s));
+  const before = JSON.stringify(s.tiers), p60 = E.nestIn(s, 60), p0 = E.nestIn(s, 0);
+  check(JSON.stringify(s.tiers) === before && p0 === E.nestSize(s), 'nestIn(0) = nestSize, state untouched');
+  const c = E.deserialize(E.serialize(s)); for (let i = 0; i < 600; i++) E.tick(c, 0.1);
+  check(Math.abs(p60 / E.nestSize(c) - 1) < 1e-6, 'nestIn(60 s) = nest after 60 s of ticks (' + p60.toFixed(0) + ' vs ' + E.nestSize(c).toFixed(0) + ')');
+  check(E.nestIn(s, 300, 2, 10) > E.nestIn(s, 300) && E.nestIn(s, 300, 4, 1) > E.nestIn(s, 300) && isFinite(E.nestIn(s, 1e9, 4, 1e300)), 'nestIn with a projected buy grows the nest, finite at extremes');
+}
 // garbage tolerance
 for (const g of [null, undefined, '', '{bad', 42, [], { gold: 'x', tiers: 'no', missions: [{ tpl: 'zzz' }] }, { gold: Infinity, tiers: [NaN, -5, 1e400], buildings: { digger: -3 } }]) {
   const s = E.deserialize(g); finiteDeep(s, 'deser'); check(s.missions.length === 3, 'missions after deser');
@@ -36,7 +48,9 @@ for (const g of [null, undefined, '', '{bad', 42, [], { gold: 'x', tiers: 'no', 
   check(JSON.stringify(m1) === JSON.stringify(m2), 'deterministic missions');
   const rt = E.deserialize(E.serialize(Object.assign(s, { _caveActive: true })));
   check(rt._caveActive === undefined && rt.missions.length === 3, 'serialize omits _ keys');
-  check(E.nextMilestone('building', 0) === 25 && E.nextMilestone('building', 200) === 300 && E.nextMilestone('tier', 1000) === null, 'nextMilestone');
+  check(E.nextMilestone('building', 0) === 10 && E.nextMilestone('building', 10) === 25 && E.nextMilestone('building', 200) === 300 && E.nextMilestone('tier', 1000) === null, 'nextMilestone');
+  // Ember kilns keep the old 25 / 50 / 100 / 150 / 200 curve (no x2 at 10)
+  check(E.milestoneMult('kiln', 10) === 1 && E.milestoneMult('kiln', 25) === 2 && E.milestoneMult('kiln', 300) === 64 && E.milestoneMult('building', 10) === 2 && E.nextMilestone('kiln', 0) === 25 && E.nextMilestone('kiln', 200) === 300, 'kiln milestones');
 }
 // offline accuracy: substeps vs fine Euler-free reference (exact integrator at 1s)
 {

@@ -90,9 +90,20 @@ for (const f of fixtures) {
   if (V1) {
     const a = V1.engine.deserialize(raw), b = V2.engine.deserialize(raw);
     const sa = V1.engine.stats(a), sb = V2.engine.stats(b);
-    for (const k of ['gps', 'baseGps', 'coinWorth', 'strokeWorth', 'spillRate', 'sweepRate', 'sweepGps', 'gustCooldown', 'gustWorthMult', 'maxStreak', 'offlineCapHours', 'legendMult'])
+    // Feel pass (intentional economy change): building gold/s now has Nest warmth (x warmth of the brood) and new
+    // building gps/milestones, so gold/s, coin worth (its gps part), sweep gold/s and offline gold differ from git main.
+    // Everything else is unchanged and still must match exactly.
+    for (const k of ['spillRate', 'sweepRate', 'gustCooldown', 'gustWorthMult', 'maxStreak', 'offlineCapHours', 'legendMult'])
       check(sa[k] === sb[k], f + ': stats.' + k + ' v1=' + sa[k] + ' v2=' + sb[k]);
-    check(JSON.stringify(sa.tierRates) === JSON.stringify(sb.tierRates) && JSON.stringify(sa.treasureInterval) === JSON.stringify(sb.treasureInterval) && JSON.stringify(sa.buildingGps) === JSON.stringify(sb.buildingGps), f + ': tierRates/treasureInterval/buildingGps identical');
+    check(JSON.stringify(sa.tierRates) === JSON.stringify(sb.tierRates) && JSON.stringify(sa.treasureInterval) === JSON.stringify(sb.treasureInterval), f + ': tierRates/treasureInterval identical');
+    // the changed numbers: finite, building gold/s present exactly when buildings are, Nest warmth >= 1 and matching
+    // the brood, and gold/s = (sum of building gold/s) (self-consistent)
+    const nb = Object.values(b.buildings).reduce((x, y) => x + y, 0);
+    check(isFinite(sb.gps) && isFinite(sb.coinWorth) && (nb > 0) === (sb.baseGps > 0) && (sa.baseGps > 0) === (sb.baseGps > 0), f + ': gold/s finite and present iff buildings (' + sa.baseGps + ' -> ' + sb.baseGps + ')');
+    check(sb.broodMult >= 1 && Math.abs(sb.broodMult - V2.engine.warmthAt(V2.engine.nestSize(b))) < 1e-9 * sb.broodMult, f + ': Nest warmth x' + sb.broodMult.toFixed(3) + ' from the brood');
+    const sumB = Object.values(sb.buildingGps).reduce((x, y) => x + y, 0);
+    check(Math.abs(sumB - sb.gps) <= 1e-9 * Math.max(1, sb.gps), f + ': gold/s = sum of building gold/s');
+    check(sb.coinWorth >= sa.coinWorth * 0.2 && sb.coinWorth <= sa.coinWorth * 5, f + ': coin worth in the same range (' + sa.coinWorth + ' -> ' + sb.coinWorth + ')');
     for (const id of Object.keys(a.buildings)) check(JSON.stringify(V1.engine.buildingCost(a, id, 10)) === JSON.stringify(V2.engine.buildingCost(b, id, 10)), f + ': buildingCost(' + id + ',10) identical');
     for (let i = 0; i < 5; i++) check(JSON.stringify(V1.engine.tierCost(a, i, 'max')) === JSON.stringify(V2.engine.tierCost(b, i, 'max')), f + ': tierCost(' + i + ',max) identical');
     // v2 Legend gain is 3.2 * cbrt(earnedRun / 1e7) (v1: sqrt(earnedRun / 1e6)); both give 3 at the 1e7 Sleep minimum,
@@ -100,7 +111,32 @@ for (const f of fixtures) {
     if (V1.engine.canSleep(a)) check(V1.engine.legendOnSleep(a) === V2.engine.legendOnSleep(b), f + ': legendOnSleep identical at the Sleep minimum (' + V1.engine.legendOnSleep(a) + ' vs ' + V2.engine.legendOnSleep(b) + ')');
     check(V1.engine.canSleep(a) === V2.engine.canSleep(b), f + ': canSleep identical');
     const oa = V1.engine.offline(a, 7200), ob = V2.engine.offline(b, 7200);
-    check(oa.gold === ob.gold && JSON.stringify(oa.minions) === JSON.stringify(ob.minions), f + ': offline(2h) identical ' + oa.gold + ' vs ' + ob.gold);
+    // minions are unchanged; offline gold changed with the economy (Nest warmth), it must stay finite and > 0 iff v1's is
+    check(JSON.stringify(oa.minions) === JSON.stringify(ob.minions), f + ': offline(2h) minions identical');
+    check(isFinite(ob.gold) && (oa.gold > 0) === (ob.gold > 0), f + ': offline(2h) gold ' + oa.gold + ' -> ' + ob.gold);
+  }
+  // Nest warmth only ever adds: the same save with warmth switched off (W0 -> infinity) has coin worth no higher, and
+  // 2 h offline gives no more gold and exactly the same minions
+  {
+    const C2 = V2.data.C, w0 = C2.broodW0;
+    const on = E.deserialize(raw), sOn = E.stats(on), coinOn = sOn.coinWorth, gpsOn = sOn.gps;
+    const offOn = E.offline(E.deserialize(raw), 7200);
+    C2.broodW0 = 1e300; E.dirty(); // ~infinity (a non-finite W0 falls back to the default)
+    let coinOff, gpsOff, offOff;
+    try {
+      const off = E.deserialize(raw), sOff = E.stats(off);
+      coinOff = sOff.coinWorth; gpsOff = sOff.gps; offOff = E.offline(E.deserialize(raw), 7200);
+      check(sOff.broodMult === 1, f + ': warmth x1 with W0 = infinity');
+    } finally { C2.broodW0 = w0; E.dirty(); }
+    check(coinOn >= coinOff * (1 - 1e-12), f + ': Nest warmth never lowers coin worth (' + coinOff + ' -> ' + coinOn + ')');
+    check(gpsOn >= gpsOff * (1 - 1e-12), f + ': Nest warmth never lowers gold/s (' + gpsOff + ' -> ' + gpsOn + ')');
+    check(offOn.gold >= offOff.gold * (1 - 1e-12), f + ': offline(2h) gold with warmth >= without (' + offOff.gold + ' -> ' + offOn.gold + ')');
+    check(JSON.stringify(offOn.minions) === JSON.stringify(offOff.minions), f + ': offline(2h) minions identical with and without warmth');
+  }
+  // the feel pass must not make an existing save poorer on load: gold/s >= 0.8x what the pre-feel-pass engine gave
+  {
+    const before = { 'v1-postsleep.json': 650, 'v1-rank4.json': 141.4, 'v1-sleepready.json': 2565 }[f];
+    if (before) { const g = E.stats(E.deserialize(raw)).baseGps; check(g >= 0.8 * before, f + ': gold/s on load ' + g.toFixed(1) + ' >= 0.8 x ' + before); }
   }
   console.log('ok ' + f + ': rank ' + s.rank + ', gold ' + V2.fmt(s.gold) + ', legend ' + s.legend + ' -> legendPts ' + s.legendPts);
 }
@@ -154,6 +190,58 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
     const raw = fs.readFileSync(path.join(FIX, f), 'utf8').trim();
     compareLoad(H, f, raw, '[all modules] ');
   }
+}
+
+// ---------------------------------------------------------------- the real player's case: a v2 save right after
+// Sleep 1 with Lore greed:1 + halls:1 (written by the pre-feel-pass engine) loads, plays and keeps its Lore
+{
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'].filter(f => fs.existsSync(path.join(root, f)));
+  const H = load(mods, disk), E3 = H.engine;
+  const raw = fs.readFileSync(path.join(FIX, 'v1-postsleep.json'), 'utf8');
+  const o = JSON.parse(raw);
+  Object.assign(o, { v: 2, legend: 3, legendPts: 0, lore: { greed: 1, halls: 1 }, relics: {}, flags: {}, auto: {}, myth: 0, mythPts: 0, myths: 0, sleeps: 1 });
+  o.tiers = [1200, 30, 2, 0, 0]; o.buildings = Object.assign({}, o.buildings, { digger: 22, raid: 6 });
+  const v2raw = JSON.stringify(o);
+  const s = E3.deserialize(v2raw);
+  check(s.v === 2 && !s._migratedFrom && s.lore.greed === 1 && s.lore.halls === 1 && s.legend === 3 && s.legendPts === 0 && s.sleeps === 1, 'player v2 save (Sleep 1, greed:1 halls:1) loads with its Lore');
+  check(JSON.stringify(s.tiers) === JSON.stringify(o.tiers) && s.buildings.digger === 22 && s.gold === o.gold, 'player v2 save keeps gold, brood and buildings');
+  const st = E3.stats(s);
+  check(st.broodMult > 1 && st.gps > 0 && !finiteDeep(st, 'stats'), 'player v2 save: Nest warmth x' + st.broodMult.toFixed(3) + ', gold/s ' + st.gps.toFixed(1));
+  for (let i = 0; i < 120; i++) E3.tick(s, 0.5);
+  const r = E3.offline(s, 4 * 3600);
+  check(r.gold > 0 && !finiteDeep(s, 'state') && !finiteDeep(E3.stats(s), 'stats'), 'player v2 save: ticks + 4 h offline finite (+' + H.fmt(r.gold) + ' gold)');
+  const back = E3.deserialize(E3.serialize(s));
+  check(back.lore.greed === 1 && back.lore.halls === 1 && back.gold === s.gold, 'player v2 save round trip');
+}
+
+// ---------------------------------------------------------------- the real player's save, rebuilt by the engine
+// (tools/fixtures/v2-player-sleep1.json): Sleep 1, Lore greed:1 + halls:1, 3 Legend, 21 card types and a Volcano Lair
+// running. It loads, keeps everything, the lair stays live, and a fresh run plays with the new economy.
+{
+  const raw = fs.readFileSync(path.join(FIX, 'v2-player-sleep1.json'), 'utf8');
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'];
+  const H = load(mods, disk), E4 = H.engine, X = H.events;
+  const s = E4.deserialize(raw), o = JSON.parse(JSON.parse(raw).json);
+  check(s.v === 2 && s.sleeps === 1 && s.legend === 3 && s.lore.greed === 1 && s.lore.halls === 1, 'player save: Sleep 1, 3 Legend, greed:1 halls:1');
+  check(Object.keys(s.cards).length === 21 && JSON.stringify(s.cards) === JSON.stringify(o.cards), 'player save: 21 card types kept');
+  check(s.events && s.events.lair === 'volcano' && s.events.q === 5, 'player save: Volcano Lair with 5 quest steps');
+  X._now = s.events.start + 3600e3;
+  X.sync(s);
+  check(X.active(s) && s.events.lair === 'volcano' && s.events.q === 5, 'player save: Volcano Lair still running after sync');
+  let bought = 0;
+  for (let t = 0; t < 1200; t++) { // 10 min of play at 0.5 s: swipe coins, buy what the Lair and Brood offer
+    E4.tick(s, 0.5);
+    E4.coinCollected(s, 2, 3, 1);
+    if (t % 4 === 0) {
+      for (const b of H.data.buildings) if (E4.buildingMax(s, b.id) >= 1 && E4.buyBuilding(s, b.id, 1)) bought++;
+      for (let i = 0; i < 2; i++) if (E4.tierMax(s, i) >= 1 && E4.buyTier(s, i, 1)) bought++;
+    }
+  }
+  const st = E4.stats(s);
+  console.log('player save: 10 min after load bought ' + bought + ', gold/s ' + st.gps.toFixed(1) + ', warmth x' + st.broodMult.toFixed(3));
+  check(bought > 10 && st.gps > 0 && st.broodMult >= 1 && !finiteDeep(s, 'state') && !finiteDeep(st, 'stats'), 'player save: 10 min of play buys ' + bought + ', gold/s ' + st.gps.toFixed(1) + ', warmth x' + st.broodMult.toFixed(3));
+  const back = E4.deserialize(E4.serialize(s));
+  check(back.lore.greed === 1 && back.lore.halls === 1 && Object.keys(back.cards).length >= 21 && back.events.lair === 'volcano', 'player save: round trip after play');
 }
 
 console.log((fails ? fails + ' FAILURES, ' : '') + passes + ' checks passed');

@@ -341,12 +341,20 @@
     lastManual = fin(s.time, 0); lastManualState = s;
   });
 
-  // gold gain of one more building (milestone aware), per second
-  function buildGain(s, st, id) {
+  // gold gain of one more building (milestone aware), per second, net of the Nest bonus its minion cost takes away
+  // (late in a run a building can cost so many Eggs or Wyrmlings that the smaller nest loses more than it adds)
+  function buildGain(s, st, id, c) {
     var owned = Math.floor(pos(s.buildings[id]));
     var each = fin(st.buildingEach[id], 0) / (st.frenzyActive ? Math.max(1, fin(D.C.frenzyMult, 7) * fin(st.M.frenzyMult, 1)) : 1);
     var m0 = E.milestoneMult('building', owned), m1 = E.milestoneMult('building', owned + 1);
-    return m0 > 0 ? each * ((owned + 1) * m1 / m0 - owned) : each;
+    var gain = m0 > 0 ? each * ((owned + 1) * m1 / m0 - owned) : each;
+    c = c || E.buildingCost(s, id, 1);
+    var eq = D.C.broodEggs, w0 = fin(st.broodMult, 1), bg = pos(st.baseGps);
+    if (c && c.minionTier >= 0 && eq && typeof E.warmthAt === 'function' && w0 > 0) {
+      var w1 = fin(E.warmthAt(Math.max(0, pos(st.nestSize) - pos(c.minions) * fin(eq[c.minionTier], 0))), w0);
+      gain = (bg + gain) * w1 / w0 - bg;
+    }
+    return gain;
   }
   function minionsOk(s, c) { return c.minionTier < 0 || pos(s.tiers[c.minionTier]) + 1e-9 >= c.minions; }
   function autoBuildings(s, offline) {
@@ -373,7 +381,7 @@
         if (!E.isUnlocked(s, 'building', id) || !buildingAutoOn(s, id)) continue;
         var c = E.buildingCost(s, id, 1);
         if (!(c.gold > 0) || !minionsOk(s, c)) continue;
-        var gain = buildGain(s, st, id);
+        var gain = buildGain(s, st, id, c);
         if (!(gain > 0)) continue;
         var score = Math.max(0, (c.gold - pos(s.gold)) / inc) + c.gold / gain;
         if (!best || score < best.score) best = { id: id, score: score, cost: c.gold };
@@ -517,6 +525,8 @@
     buyRelic: buyRelic,
     anyAffordable: anyAffordable,
     affordableCount: affordableCount,
+    // gold/s one more building adds, net of the Nest bonus its minion cost takes (what Master Builders compares)
+    buildGain: function (s, id) { return buildGain(s, E.stats(s), id); },
     // { now, next } effect strings for a node or relic (next is null at max level), or null when it has no value line
     effect: function (s, id) {
       var d = NIDX[id] || RIDX[id];

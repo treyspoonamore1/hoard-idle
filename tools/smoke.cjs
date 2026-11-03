@@ -411,7 +411,14 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     check(!bad, f + ' no NaN/undefined text' + (bad ? ' -> "' + bad[0] + '"' : ''));
     check(ferr.length === 0, f + ' no console/page errors' + (ferr.length ? ':\n  ' + ferr.join('\n  ') : ''));
     if (f === 'v1-postsleep.json') {
-      await fp.waitForTimeout(2600);
+      // the callout waits for open sheets: after a reload the "While you slept" welcome-back sheet can be up first
+      // (about 3 runs in 10), so close it like a player would and wait for the callout instead of a fixed 2.6 s
+      await fp.waitForFunction(() => {
+        const t = document.getElementById('overlay').innerText;
+        if (/Spend your Legend/.test(t)) return true;
+        if (/While you slept/.test(t) && HOARD.ui && HOARD.ui.closeSheet) HOARD.ui.closeSheet();
+        return false;
+      }, null, { timeout: 10000, polling: 200 }).catch(() => {});
       check(/Spend your Legend/.test(await fp.evaluate(() => document.getElementById('overlay').innerText)), f + ' v1 player with unspent Legend gets the Lore callout');
     }
     await fctx.close();

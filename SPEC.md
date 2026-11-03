@@ -86,7 +86,7 @@ gold cost = base × 1.15^owned; minion cost = ceil(base × 1.10^owned).
 | moon | Gold Moons | 9,000,000 | 2 Elder Dragons | 7,000 | 6 |
 
 Minion tier i unlocks at rank i+1 (Eggs at rank 1, Wyrmlings rank 2, …, Elders rank 5).
-Building milestones: owning 25 / 50 / 100 / 150 / 200 / 300 / 400 … (every 100 after 200) each doubles that building.
+Building milestones: owning 25 / 50 / 100 / 150 / 200 / 300 / 400 … (every 100 after 200) each doubles that building. (Feel pass: now 10 / 25 / 50 / 100 / 150 / 200 / 300 …, and Nest warmth multiplies building gold/s; see EXTENSIONS.md. Ember kilns keep 25 / 50 / 100 / 150 / 200.)
 
 ### Lair upgrades (one-time gold purchases; ~14; shown when affordable-ish: cost ≤ 3× current gold or already near unlock; hide bought ones)
 Must include at least:
@@ -103,7 +103,7 @@ Engine exposes which ones are visible.
 - **coinWorth** = (clawsMult + (0.005 + scalesPct)·gps / legendMult) × cardMult(swipe) × effects(ember) × legendMult. (gps already includes legendMult, so it is divided out to apply Legend once; claws scale only the flat part.)
 - **Stroke value**: just moving a finger across the cave also earns: every 120px of swipe path → `0.25 × coinWorth` (streak multiplier applies). This makes swiping always worth something.
 - **Streak**: while the finger is down and moving ≥ 50 px/s (slow circles count), streak time accumulates; multiplier ×1 → ×2 at 1.5s → ×3 at 4s → ×5 at 8s → ×8 at 15s (×8 requires card or rank 4+; otherwise cap ×5). Lift finger or stay still > 0.7s: streak decays one level every 0.7s. Streak multiplies coin and stroke gold.
-- **Wing Gust**: a fast flick (path ≥ 140px within ≤ 220ms, speed ≥ 1400 px/s) when `state.gust >= 1` collects every coin on screen at ×3 and spawns a burst. Also a visible "Gust" button for accessibility (single press — fine). Recharge per Bigger Wings.
+- **Wing Gust**: a fast flick (path ≥ 140px within ≤ 220ms, speed ≥ 1400 px/s) when `state.gust >= 1` collects every coin on screen and spawns a burst: ×3 on up to `C.gustBonusCoins` (8) of them, the rest at normal worth (so a full screen left for the gust never beats swiping over the coins), and always at least `gustFloorCoins` (6) coins. Also a visible "Gust" button for accessibility (single press — fine). Recharge per Bigger Wings.
 - **Auto-sweeper** (Broom Crew): cave animates a small kobold broom collecting the oldest coin at sweepRate coins/s; worth coinWorth ×1 (no streak). If the cave is offscreen/hidden, engine still credits sweep gold in tick via `stats.sweepGps`. (To avoid double counting: cave asks engine `HOARD.engine.sweepCollect(state)` per swept coin; engine tick adds sweep gold ONLY when `state._caveActive` is false. cave.js sets `state._caveActive = true` each frame it runs; main.js sets it false while document hidden. `_`-prefixed keys are never saved.)
 
 ### Gleaming treasures (cave spawns, engine applies)

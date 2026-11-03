@@ -109,6 +109,21 @@ function missionCands(s) {
   }
   return out;
 }
+// Nest warmth (feel pass): building gold/s x (1 + nest / W0)^p, nest = brood counted in Eggs. A player sees the
+// "x1.3 gold/s" it gives, so the sim values brood buys by the warmth they add now plus ~60 s of what they raise below.
+function broodCands(s, st, inc, cands) {
+  if (!(C.broodPow > 0) || !E.warmthAt) return;
+  const eq = C.broodEggs, W = st.nestSize || 0, wf = E.warmthAt, w0 = wf(W);
+  for (let i = 0; i < 5; i++) {
+    if (!E.isUnlocked(s, 'tier', i)) continue;
+    const one = planGold(s, i, s.tiers[i] + 1); if (!isFinite(one) || one <= 0) continue;
+    const n = Math.max(1, Math.floor(s.gold * 0.25 / one));
+    const cost = planGold(s, i, s.tiers[i] + n); if (!isFinite(cost)) continue;
+    let dv = st.baseGps * (wf(W + n * eq[i] - (i > 0 ? n * D.tiers[i].prevCost * eq[i - 1] : 0)) / w0 - 1);
+    if (i > 0) dv += st.baseGps * (wf(W + n * st.tierUnitRate[i] * 60 * eq[i - 1]) / w0 - 1) / 2;
+    if (dv > inc * 1e-4) cands.push({ kind: 'tb', id: i, n, cost, dv });
+  }
+}
 function shop(s, prof, R, M) {
   for (let guard = 0; guard < 400; guard++) {
     const st = E.stats(s);
@@ -137,6 +152,7 @@ function shop(s, prof, R, M) {
       const dv = st.tierUnitRate[i] * tierEq(s, i - 1) * 0.5;
       if (dv > 0 && isFinite(cost)) cands.push({ kind: 't', id: i, cost, dv });
     }
+    broodCands(s, st, inc, cands);
     let best = null;
     for (const c of cands) {
       if (!(c.dv > 0)) continue;
@@ -164,6 +180,8 @@ function shop(s, prof, R, M) {
       if (ok) M.upgradeAt[best.id] = R.T;
     } else if (best.kind === 'mt') {
       ok = ensure(s, best.id, best.n, M);
+    } else if (best.kind === 'tb') {
+      ok = ensure(s, best.id, s.tiers[best.id] + best.n, M);
     } else {
       const n = Math.max(1, Math.floor(s.gold * 0.25 / Math.max(best.cost, 1e-9)));
       ok = ensure(s, best.id, s.tiers[best.id] + n, M) || ensure(s, best.id, s.tiers[best.id] + 1, M);
@@ -220,7 +238,8 @@ function run(prof) {
       E.noteStreak(s, isInt(R.T / 60) ? st.maxStreak : 3); // an occasional long swipe
       if (E.gustReady(s) && E.useGust(s)) { // gusts whenever ready (collects whatever is on screen)
         const n = Math.floor(pool), avg = n > 0 ? poolV / pool : 0;
-        if (n > 0) { e0 = s.earnedAll; E.coinCollected(s, n, 3, avg * st.gustWorthMult); addSrc('gust', s.earnedAll - e0); pool -= n; poolV -= n * avg; }
+        const gv = avg * (1 + (st.gustWorthMult - 1) * Math.min(n, C.gustBonusCoins || n) / Math.max(1, n)); // x3 on <= gustBonusCoins
+        if (n > 0) { e0 = s.earnedAll; E.coinCollected(s, n, 3, gv); addSrc('gust', s.earnedAll - e0); pool -= n; poolV -= n * avg; }
         const fl = Math.max(0, (C.gustFloorCoins || 0) - n); // engine floor: a gust always pays >= gustFloorCoins coins
         if (fl > 0) { e0 = s.earnedAll; E.coinCollected(s, fl, 3, st.gustWorthMult); addSrc('gust', s.earnedAll - e0); }
       }

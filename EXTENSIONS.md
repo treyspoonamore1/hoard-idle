@@ -128,9 +128,9 @@ HOARD.engine.addModSource('lore', function (s, M) {
 The resulting formulas (`bg` = building gold/s before Frenzy):
 
 ```
-bg        = Σ_b  b.gps × 2^milestones × buildingMult[b] × owned   × allMult × gpsMult
+bg        = Σ_b  b.gps × 2^milestones × buildingMult[b] × owned   × allMult × gpsMult × warmth
 gps       = bg × frenzy
-coinWorth = (coinFlat + (0.005 + coinGpsPct) × bg / allMult) × coinMult × ember × allMult
+coinWorth = (coinFlat + (0.005 + coinGpsPct) × (bg / warmth^(1-broodCoin)) / allMult) × coinMult × ember × allMult
 stroke    = 0.25 × coinWorth × strokeMult
 tier rate = prod × 2^milestones × allMult × tierMult[i]
 ```
@@ -149,6 +149,20 @@ offline) marks it dirty. **If your code changes anything a mod source reads (lor
 event-card copies, relics) outside a tick, call `HOARD.engine.dirty()` afterwards.** Otherwise the UI shows
 stale numbers until the next frame's tick. `tick()` always starts by marking dirty. Treat the object from
 `stats()` as read-only (it is shared).
+
+**Nest bonus (feel pass; `warmth` in code).** The brood boosts the hoard: `warmth = (1 + nest / C.broodW0)^C.broodPow` (W0 3e6,
+p 0.12: ×1.32 per 10× brood), and past `C.broodKnee` (1e10 Eggs, warmth about ×2.65) it only grows with log(nest)
+(same slope at the knee). `nest` = Σ tiers[i] × `C.broodEggs[i]` (1, 10, 80, 640, 5120: the Eggs each unit took to
+raise), so Eggs, the biggest pile, are most of it. It multiplies building gold/s; coins get `C.broodCoin` = 0.5 of it
+(the coin gps-part and Golden Scales use building gold/s ÷ warmth^0.5, so swiping keeps pace while the nest grows).
+Players see it as the "Nest bonus" (Ember has its own "warmth"). `stats()` returns `broodMult` and `nestSize`;
+`E.nestSize(state)`, `E.warmthAt(nest)` and `E.nestIn(state, sec, tier?, n?)` (the nest after `sec` s of production
+at today's rates, optionally with n more of a tier bought now; pure) are there for UI previews ("10× more → ×1.32",
+"Buy ×10: +1.2K gold/s within 5 min"). Building gold/s each: Digger 0.15, Raid 0.6, Mine 3, Tower 14, Well 112, Moon 1225 (costs and
+growth 1.15 unchanged). Building milestones start at 10 (`D.buildingMilestones` = 10/25/50/100/150/200, then every
+100) and Eggs no longer emit `'milestone'` (they produce nothing, so their count milestones never did anything).
+Ember kilns keep the old curve: `D.kilnMilestones` = 25/50/100/150/200, then every 100, via
+`E.milestoneMult('kiln', n)` and `E.nextMilestone('kiln', n)` (so Ember balance is unchanged).
 
 `stats(state)` also returns, besides the v1 fields: `M` (the clamped accumulator), `streakRamp`,
 `streakBonus`, `offlineMult`. `E.mods(state)` is `stats(state).M`.
@@ -423,6 +437,8 @@ HOARD.ui.addSetting({ id: 'stats', order: 40, build: function (host) {
 Appended after the v1 chips (gold/s, streak, Frenzy, Ember, Legend). Visibility and text update ≤5×/s. With
 `onPress` the chip is a button (single press, large hit area). `cls` adds classes (existing looks: `legend`
 purple, `frenzy`, `ember`, `streak`). Keep text short ("Volcano Lair · 2d 14h", "Auto").
+Optional `front(state, stats)`: while it returns true the chip moves right after gold/s, ahead of the built-in
+chips (the event chip does this during a swipe rush, so the streak chip never pushes it off a 360 px screen).
 
 ### 3.5 Lair/Brood row hooks — `ui.addRowExtra(kind, fn(slotEl, id, state, cardEl))`
 

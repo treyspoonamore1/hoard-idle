@@ -491,7 +491,8 @@
     var coins = typeof C.coinCount === 'function' ? num(C.coinCount()) : 0;
     if (coins >= 8 || est.ready >= 10) {
       var okk = false;
-      try { okk = C.gust() !== false; } catch (e) { okk = false; }
+      // inside E.automated: the coins it pays are not the player's swipe (an event lair's swipe rush ignores them)
+      try { okk = E.automated(function () { return C.gust(); }) !== false; } catch (e) { okk = false; }
       if (okk) est.ready = 0;
     }
   }

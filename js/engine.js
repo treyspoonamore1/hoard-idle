@@ -581,6 +581,13 @@
     if (owned >= 300) n += Math.floor((owned - 200) / 100);
     return n;
   }
+  // Ember kilns keep the v2 curve (25 / 50 / 100 / 150 / 200, then every 100)
+  function milestoneCountKiln(owned) {
+    var n = 0, m = D.kilnMilestones || [25, 50, 100, 150, 200];
+    for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
+    if (owned >= 300) n += Math.floor((owned - 200) / 100);
+    return n;
+  }
   function milestoneCountTier(owned) {
     var n = 0, m = D.tierMilestones;
     for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
@@ -595,6 +602,7 @@
   // emits 'milestone' only when a milestone is passed for the first time this run (a tier spent on buildings
   // and bought back must not announce the same milestone again). Marks live in state.run (reset by Sleep).
   function milestoneCheck(state, kind, id, before, after) {
+    if (kind === 'tier' && id === 0) return; // Eggs produce nothing, so their count milestones do nothing: no "x2" toast
     var c = kind === 'building' ? milestoneCountBuilding(after) : milestoneCountTier(after);
     if (!(c > before) || !isObj(state.run)) return;
     var key = (kind === 'building' ? 'msb_' : 'mst_') + id;
@@ -608,6 +616,11 @@
     if (kind === 'building') {
       var m = D.buildingMilestones;
       for (var i = 0; i < m.length; i++) if (owned < m[i]) return m[i];
+      return (Math.floor(owned / 100) + 1) * 100;
+    }
+    if (kind === 'kiln') {
+      var km = D.kilnMilestones || [25, 50, 100, 150, 200];
+      for (var k = 0; k < km.length; k++) if (owned < km[k]) return km[k];
       return (Math.floor(owned / 100) + 1) * 100;
     }
     if (kind === 'tier') {
@@ -654,6 +667,46 @@
     return cl(b.gps * pow2(milestoneCountBuilding(owned)) * (bm === undefined ? 1 : bm));
   }
 
+  // Nest warmth: building gold/s x (1 + W / W0)^p, W = nest size in Eggs. Pure, reads state.tiers only.
+  function nestSize(state) {
+    var w = 0, eq = C.broodEggs || [];
+    for (var i = 0; i < 5; i++) w += pos(state.tiers[i]) * fin(eq[i], 0);
+    return cl(w);
+  }
+  // (1 + w/W0)^p up to the knee, then it keeps growing only with the log of the nest (same slope at the knee), so a
+  // late-game brood of 1e30 Eggs warms ~x20, not x1e3: every Egg still helps, but it cannot run away with the game
+  function warmthOf(w) {
+    var w0 = fin(C.broodW0, 1000), p = fin(C.broodPow, 0), knee = fin(C.broodKnee, 0);
+    if (!(w0 > 0) || !(p > 0)) return 1;
+    var x = Math.log(1 + pos(w) / w0);
+    var xk = knee > 0 ? Math.log(1 + knee / w0) : Infinity;
+    if (x <= xk) return cl(Math.exp(p * x));
+    return cl(Math.exp(p * xk) * (1 + p * (x - xk)));
+  }
+
+  // The nest a brood grows into over `sec` seconds of production (exact chain polynomial at today's per-unit rates,
+  // nothing spent). With tier/n: as if n more of that tier were bought now, paying n x prevCost of the tier below.
+  // UI previews ("Buy x10: +1.2K gold/s in 10 min") and tests; pure, never changes state.
+  function nestIn(state, sec, tier, n) {
+    var st = stats(state), r = st.tierUnitRate, eq = C.broodEggs || [], a = [], i, j, k;
+    for (i = 0; i < 5; i++) a.push(pos(state.tiers[i]));
+    tier = Math.floor(fin(tier, -1)); n = pos(n);
+    if (tier >= 0 && tier < 5 && n > 0) {
+      a[tier] = cl(a[tier] + n);
+      if (tier > 0) a[tier - 1] = Math.max(0, a[tier - 1] - n * pos(D.tiers[tier].prevCost));
+    }
+    var t = pos(sec), w = 0;
+    for (j = 0; j < 5; j++) {          // units of tier j after t: sum over k >= j of a_k x r_k..r_(j+1) x t^(k-j)/(k-j)!
+      var u = 0, f = 1;
+      for (k = j; k < 5; k++) {
+        if (k > j) f = f * pos(r[k]) * t / (k - j);
+        u += a[k] * f;
+      }
+      w += cl(u) * fin(eq[j], 0);
+    }
+    return cl(w);
+  }
+
   function mods(state) { return stats(state).M; }
   function maxStreak(state) { return stats(state).maxStreak; }
   function streakEff(state, mult) {
@@ -677,16 +730,20 @@
       eachRaw[id] = e0;
       g += e0 * Math.floor(pos(state.buildings[id]));
     }
-    var bg = cl(g * gm);
+    var nest = nestSize(state), brood = warmthOf(nest);
+    var bg = cl(g * gm * brood);
     for (i = 0; i < D.buildings.length; i++) {
       var id2 = D.buildings[i].id;
-      var each = cl(eachRaw[id2] * gm * frenzy);
+      var each = cl(eachRaw[id2] * gm * brood * frenzy);
       buildingEach[id2] = each;
       buildingGps[id2] = cl(each * Math.floor(pos(state.buildings[id2])));
     }
     var gps = cl(bg * frenzy);
     // the gps part already carries allMult; divide it out so allMult (Legend, ...) applies to coins once
-    var gpsPart = M.allMult > 0 ? (C.coinGpsPct + M.coinGpsPct) * bg / M.allMult : 0;
+    // the Nest warmth reaches coins only by its broodCoin share (buildings and brood carry the growth)
+    var bc = clamp(C.broodCoin, 0, 1);
+    var bgCoin = bc >= 1 ? bg : cl(bg / Math.pow(brood, 1 - bc));
+    var gpsPart = M.allMult > 0 ? (C.coinGpsPct + M.coinGpsPct) * bgCoin / M.allMult : 0;
     var coinWorth = cl((M.coinFlat + gpsPart) * M.coinMult * effectMult(state, 'ember') * M.allMult);
     var strokeWorth = cl(C.strokeFrac * coinWorth * M.strokeMult);
     var spillRate = C.spillBase * M.spillMult;
@@ -713,6 +770,8 @@
       tierUnitRate: unit,
       buildingGps: buildingGps,
       buildingEach: buildingEach,
+      broodMult: brood,
+      nestSize: nest,
       maxStreak: M.streakHigh ? C.streakCapHigh : C.streakCapLow,
       streakRamp: M.streakRamp,
       streakBonus: M.streakBonus,
@@ -1531,7 +1590,11 @@
     emit: emit,
     // v1 extras
     cardLevel: function (state, id) { return levelFor(cardCopies(state, id)); },
-    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); },
+    // Nest warmth (feel pass): nest size in Eggs, and the building gold/s multiplier a nest of w Eggs gives
+    nestSize: function (state) { return ok(state) ? nestSize(state) : 0; },
+    warmthAt: function (w) { return warmthOf(w); },
+    nestIn: function (state, sec, tier, n) { return ok(state) ? nestIn(state, sec, tier, n) : 0; },
+    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : kind === 'kiln' ? milestoneCountKiln(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); },
     // ---- v2 extension points (EXTENSIONS.md)
     version: VERSION,
     addModSource: addModSource,

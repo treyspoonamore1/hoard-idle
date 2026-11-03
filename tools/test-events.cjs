@@ -1,8 +1,8 @@
 // Event lairs test (SPEC-V2 section 3): loads data.js + engine.js + events.js in a Node vm and exercises the
 // UTC schedule (edges via HOARD.events._now), unlock + immediate first start, the 4-tier chains, quests, event
-// chests and the 9 exclusive cards, offline production inside the window only, the swipe bonus, Long Sleep and
-// Ascend, save round-trips, the v1 fixtures, and the check-in pacing (4 x 5 min a day finishes in 72 h, but a
-// player who plays the first hours non-stop cannot finish early).
+// chests and the 9 exclusive cards, offline production inside the window only, the swipe bonus and swipe rush,
+// Long Sleep and Ascend, save round-trips, the v1 fixtures, and the check-in pacing (4 x 5 min a day finishes in
+// <= ~55 h, 2 x 10 min gets 8+ steps, and a player who swipes and buys non-stop finishes in 1.5-3 h).
 // Usage: node tools/test-events.cjs        (PACE=1 prints every check-in of the pacing runs)
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
@@ -176,7 +176,8 @@ function live(s, sec, dt) { dt = dt || 1; for (let t = 0; t < sec; t += dt) { T 
   check(X.buyUnit(s, 0, 10) && e.units[0] === 11 && e.bought[0] === 11 && near(e.cur, 1e6 - C0.cost - sum, 1e-9), 'buy 10 charges the series');
   // one-by-one == at once
   { const a = clone(s), b = clone(s); for (let i = 0; i < 7; i++) X.buyUnit(a, 2, 1); X.buyUnit(b, 2, 7); check(near(a.events.cur, b.events.cur, 1e-9) && a.events.bought[2] === 7 && b.events.bought[2] === 7, '7 single buys cost the same as one x7 buy'); }
-  { const m3 = X.unitMax(s, 3); check(m3 >= 1 && X.unitCost(s, 3, m3) <= e.cur && X.unitCost(s, 3, m3 + 1) > e.cur, 'unitMax = largest affordable n (' + m3 + ' wyrms)'); }
+  { const z = clone(s); z.events.cur = 1e9; const m3 = X.unitMax(z, 3); check(m3 >= 1 && X.unitCost(z, 3, m3) <= z.events.cur && X.unitCost(z, 3, m3 + 1) > z.events.cur, 'unitMax = largest affordable n (' + m3 + ' wyrms)'); }
+  check(X.unitMax(s, 3) === 0 || X.unitCost(s, 3, X.unitMax(s, 3)) <= e.cur, 'unitMax never over-spends');
   check(X.unitCost(s, 1, 'max') === X.unitCost(s, 1, X.unitMax(s, 1)), "unitCost(..., 'max') = cost of unitMax");
   // produced units are free and never raise prices
   { const p1 = X.unitPrice(s, 0), b0 = e.bought[0]; e.units[0] += 500; check(X.unitPrice(s, 0) === p1 && e.bought[0] === b0, 'units produced by the tier above do not raise the price'); e.units[0] -= 500; }
@@ -219,11 +220,60 @@ function live(s, sec, dt) { dt = dt || 1; for (let t = 0; t < sec; t += dt) { T 
   const per = X.perCoin(s);
   check(near(per, X.C.coinBase + X.C.coinRate * 50 * X.CHAIN[0].rate), 'perCoin = base + coinRate x currency/s');
   const c0 = e.cur, k0 = e.coins;
+  check(!X.rushing(s) && X.speed(s) === 1, 'no swipe rush before the first coin');
   E.coinCollected(s, 40, 3);
+  check(X.rushing(s) && e.rush === X.C.rushSec && X.speed(s) === X.C.rushMult, 'a swiped coin starts the swipe rush (x' + X.C.rushMult + ' for ' + X.C.rushSec + 's)');
   T += 1000; E.tick(s, 1);
   const prod = 50 * X.CHAIN[0].rate;
-  check(near(e.cur - c0, 40 * per + prod, 1e-9), '40 swiped coins add ' + (40 * per).toFixed(2) + ' + 1s production');
+  check(near(e.cur - c0, 40 * per + prod * X.C.rushMult, 1e-9), '40 swiped coins add ' + (40 * per).toFixed(2) + ' + 1s production at rush speed');
   check(e.coins - k0 === 40 && e.fromCoins > 0, 'coins counted for quests');
+  // the rush runs the whole chain faster (a time warp): 10 rushed seconds == 10 x rushMult normal seconds
+  { const a = clone(s), ref = { events: clone(e) };
+    a.events.units = [5, 3, 2, 1]; ref.events.units = [5, 3, 2, 1]; a.events.cur = ref.events.cur = 0;
+    E.coinCollected(a, 1, 1); a.events.cur = 0; ref.events.cur = 0;
+    for (let i = 0; i < 10; i++) { T += 1000; E.tick(a, 1); }
+    X.produce(ref, 10 * X.C.rushMult);
+    check(near(a.events.cur, ref.events.cur, 1e-9) && a.events.units.every((u, i) => near(u, ref.events.units[i], 1e-9)), 'rushed live play = time warp of the whole chain (' + a.events.cur.toFixed(2) + ' vs ' + ref.events.cur.toFixed(2) + ')');
+    // it runs out rushSec after the last coin, then production is back to normal speed
+    for (let i = 0; i < X.C.rushSec; i++) { T += 1000; E.tick(a, 1); }
+    check(!X.rushing(a) && a.events.rush === 0, 'rush ends ' + X.C.rushSec + 's after the last coin');
+    const b = clone(a); b.events.units = [100, 0, 0, 0]; b.events.cur = 0;
+    for (let i = 0; i < 5; i++) { T += 1000; E.tick(b, 1); }
+    check(near(b.events.cur, 100 * X.CHAIN[0].rate * 5, 1e-9), 'after the rush: normal speed');
+    // offline never rushes, and a saved rush is clamped
+    E.coinCollected(b, 1, 1); b.events.cur = 0; b.savedAt = T;
+    const r = E.deserialize(E.serialize(b)); T += 3600e3; E.offline(r, 3600);
+    check(near(r.events.cur, 100 * X.CHAIN[0].rate * 3600, 1e-6) && r.events.rush === 0, 'offline production runs at normal speed and clears the rush');
+    const bad = E.deserialize(JSON.stringify(Object.assign(JSON.parse(E.serialize(b)), { events: Object.assign({}, b.events, { rush: 1e9 }) })));
+    const bad2 = E.deserialize(JSON.stringify(Object.assign(JSON.parse(E.serialize(b)), { events: Object.assign({}, b.events, { rush: 'x' }) })));
+    check(bad.events.rush === X.C.rushSec && bad2.events.rush === 0, 'saved rush sanitized (' + bad.events.rush + ', ' + bad2.events.rush + ')'); }
+  // only the player's own swipes rouse the brood: coins an automation pays (Restless Wings' auto-gust runs inside
+  // E.automated) add currency but never start or refresh the rush (review: an AFK tab kept x25 on and won x500-x5000)
+  { const c = clone(s); c.events.rush = 0; c.events.units = [50, 10, 2, 0];
+    const k1 = c.events.cur;
+    E.automated(() => E.coinCollected(c, 6, 1, 3));
+    check(c.events.rush === 0 && !X.rushing(c) && c.events.cur > k1, 'automated coins add currency but no rush');
+    const idle = clone(c), afk = clone(c); let on = 0;
+    for (let i = 1; i <= 3600; i++) {
+      T += 1000; E.tick(idle, 1); E.tick(afk, 1);
+      if (i % 20 === 0) E.automated(() => E.coinCollected(afk, 6, 1, 3));  // Bigger Wings II + Restless Wings, nobody swiping
+      if (X.rushing(afk)) on++;
+    }
+    const extra = afk.events.fromCoins - idle.events.fromCoins;
+    check(on === 0 && near(afk.events.earned - extra, idle.events.earned, 1e-9), 'AFK auto-gusts for 1 h: rush on ' + on + ' s, brood output identical to no gusts (' + (afk.events.earned / idle.events.earned).toFixed(3) + 'x incl. coin currency)'); }
+  // the lair sheet covers the cave: the rush runs down rushSheetDrain as fast while it is open (bounded, never frozen)
+  { const c = clone(s); E.coinCollected(c, 1, 1);
+    const dr = X.C.rushSheetDrain, keep = X.C.rushSec / dr;
+    check(dr > 0 && dr < 1, 'sheet drain ' + dr + ' (a ' + X.C.rushSec + ' s rush lasts ' + keep + ' s of shopping)');
+    X.setSheetOpen(true);
+    for (let i = 0; i < keep - 1; i++) { T += 1000; E.tick(c, 1); }
+    const mid = X.rushing(c);
+    for (let i = 0; i < 2; i++) { T += 1000; E.tick(c, 1); }
+    check(mid && !X.rushing(c) && c.events.rush === 0, 'sheet open: rush lasts ' + keep + ' s, then ends');
+    X.setSheetOpen(false);
+    E.coinCollected(c, 1, 1);
+    for (let i = 0; i < X.C.rushSec; i++) { T += 1000; E.tick(c, 1); }
+    check(!X.rushing(c), 'sheet closed: back to ' + X.C.rushSec + ' s'); }
   const o = E.newState(); E.coinCollected(o, 50, 1); T += 1000; E.tick(o, 1);
   check(o.events.coins === 0 && o.events.cur === 0, 'no event: coins give no currency');
 }
@@ -392,7 +442,7 @@ function live(s, sec, dt) { dt = dt || 1; for (let t = 0; t < sec; t += dt) { T 
 // ---------------------------------------------------------------- pacing
 // profile: check-ins at fixed UTC hours, each `mins` long, swiping `coins` coins/s; between them offline()
 // (capped like the game, 8h). The player claims, opens chests, then buys: units for an "own" quest first,
-// otherwise top tier down. 'cont' plays non-stop for `hours`.
+// otherwise top tier down. 'cont' plays non-stop for `hours`. Swiping keeps the swipe rush on during sessions.
 function pace(prof) {
   const P = load(FILES, 99);
   const E2 = P.engine, X2 = P.events;
@@ -446,8 +496,7 @@ function pace(prof) {
     '2x10min (08,20)': { hours: [8, 20], mins: 10, coins: 2 },
     '4x5min, lair opened 8h before': { hours: [8, 12.5, 18, 22.5], mins: 5, coins: 2, lateStart: true },
     '3x5min, lair opened 8h before': { hours: [8, 14, 21], mins: 5, coins: 2, lateStart: true },
-    'non-stop 6h': { cont: 6, coins: 2 },
-    'non-stop 12h': { cont: 12, coins: 2 }
+    'non-stop 6h': { cont: 6, coins: 2 }
   };
   const out = {};
   for (const name of Object.keys(runs)) {
@@ -466,8 +515,10 @@ function pace(prof) {
   check(out['3x5min (08,14,21)'].done, '3 check-ins a day also finish (at ' + out['3x5min (08,14,21)'].at.toFixed(1) + 'h)');
   check(out['5x5min'].done && out['5x5min'].at >= 36, '5 check-ins a day finish, still not early (' + out['5x5min'].at.toFixed(1) + 'h)');
   check(out['4x5min, lair opened 8h before'].done, 'a global lair first seen 8h late still finishes with 4 check-ins (at ' + out['4x5min, lair opened 8h before'].at.toFixed(1) + 'h)');
-  check(!out['non-stop 6h'].done && out['non-stop 6h'].q <= 8, 'non-stop play for the first 6h cannot finish (' + out['non-stop 6h'].q + '/10)');
-  check(!out['non-stop 12h'].done, 'non-stop play for 12h cannot finish (' + out['non-stop 12h'].q + '/10)');
+  // active play may finish fast (player feedback): swiping + buying non-stop clears the line in ~1.5-3 h
+  check(out['non-stop 6h'].done && out['non-stop 6h'].at >= 1.5 && out['non-stop 6h'].at <= 3, 'non-stop play finishes in 1.5-3h (' + (out['non-stop 6h'].done ? out['non-stop 6h'].at.toFixed(2) + 'h' : out['non-stop 6h'].q + '/10') + ')');
+  check(a.at <= 55, '4x5min/day finishes within ~55h (' + a.at.toFixed(1) + 'h)');
+  check(out['2x10min (08,20)'].q >= 8, '2x10min/day: 8-10 steps (' + out['2x10min (08,20)'].q + ')');
   const cards = Object.keys(a.s.cards).filter(k => /^ev_/.test(k)).map(k => k + ':' + a.s.cards[k]);
   console.log('4x5min cards won: ' + cards.join(' '));
 }

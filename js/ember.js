@@ -100,7 +100,7 @@
   function isAwake(s) { var em = peek(s); return !!(em && em.awake === true); }
   function has(em, id) { return !!(em && isObj(em.breaths) && em.breaths[id] === true); }
   function kilnCount(em, k) { return (em && Array.isArray(em.kilns)) ? Math.floor(pos(em.kilns[k])) : 0; }
-  function milestoneMult(owned) { return (E.milestoneMult ? fin(E.milestoneMult('building', owned), 1) : 1) || 1; }
+  function milestoneMult(owned) { return (E.milestoneMult ? fin(E.milestoneMult('kiln', owned), 1) : 1) || 1; }
 
   // global kiln multiplier (breaths, relic)
   function kilnMult(s) {

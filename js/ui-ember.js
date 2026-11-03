@@ -151,7 +151,7 @@
         ui.setCls(row.cv, 'short', X.embers(s) < cost.embers);
         ui.setCls(row.btn, 'can', max >= (amt === 'max' ? 1 : amt));
         ui.setText(row.btn.s, '×' + fmt(Math.max(1, cost.n)));
-        ui.milestonePatch(row, 'building', owned);
+        ui.milestonePatch(row, 'kiln', owned);
       });
     });
     return function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); };

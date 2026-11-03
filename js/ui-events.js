@@ -25,21 +25,24 @@
     if (m > 0) return m + 'm';
     return sec + 's';
   }
-  // rates below 1/s read better per hour ("1.8 Lava Hounds/h")
-  function rateStr(perSec) {
+  // rates below 1/s read better per hour ("1.8 Lava Hounds/h"); `unit` forces 's' or 'h' so one row never mixes them
+  function unitFor(perSec) { return num(perSec) >= 1 ? 's' : 'h'; }
+  function rateStr(perSec, unit) {
     perSec = num(perSec);
-    if (perSec <= 0) return '0/s';
-    if (perSec >= 1) return fmt(perSec) + '/s';
+    unit = unit || unitFor(perSec);
+    if (unit === 's') return (perSec <= 0 ? '0' : HOARD.fmtR(perSec)) + '/s';
+    if (perSec <= 0) return '0/h';
     var ph = perSec * 3600;
     return (ph < 10 ? (Math.round(ph * 10) / 10) : fmt(ph)) + '/h';
   }
   // "360 Obsidian/h", "1.8 Lava Hounds/h", "5 Magma Imps/s"
-  function rateIn(perSec, what) {
-    var r = rateStr(perSec), i = r.lastIndexOf('/');
+  function rateIn(perSec, what, unit) {
+    var r = rateStr(perSec, unit), i = r.lastIndexOf('/');
     return r.slice(0, i) + ' ' + what + r.slice(i);
   }
   // prices are not round any more: never show less than the real price (12.3 -> 13)
   function priceStr(p) { p = num(p); return fmt(p < 1000 ? Math.ceil(p - 1e-9) : p); }
+  function rushX() { return fmt(num(X.C.rushMult, 1)); }
   function cardDef(id) { for (var i = 0; i < D.cards.length; i++) if (D.cards[i].id === id) return D.cards[i]; return null; }
   function rarName(r) { return (D.rarities[r] && D.rarities[r].name) || r; }
   function icon(name) { var i = el('span', 'ev-ico'); i.innerHTML = (ui.icons && ui.icons[name]) || ''; return i; }
@@ -68,6 +71,10 @@
     '.ev-curname { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--ev); font-weight: 700; margin-top: 4px; }',
     '.ev-rates { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; color: var(--ink-dim); font-size: 14px; margin-top: 6px; font-variant-numeric: tabular-nums; }',
     '.ev-rates b { color: var(--ink); }',
+    '.ev-rush { display: inline-block; margin-top: 8px; padding: 3px 10px; border-radius: 999px; font-size: 13px; color: var(--ink-dim);',
+    '  border: 1px dashed color-mix(in srgb, var(--ev) 45%, transparent); font-variant-numeric: tabular-nums; }',
+    '.ev-rush.on { color: var(--ev-hi); font-weight: 700; border-style: solid; border-color: var(--ev); background: color-mix(in srgb, var(--ev) 18%, transparent);',
+    '  box-shadow: 0 0 14px color-mix(in srgb, var(--ev) 35%, transparent); }',
     '.ev-blurb { font-style: italic; color: var(--ink-dim); font-size: 14px; text-align: center; margin: 8px 6px 2px; }',
     '.ev-sheet .sec-head h2 { color: var(--ev-hi); }',
     '.ev-sheet .card { border-color: color-mix(in srgb, var(--ev) 18%, var(--line)); }',
@@ -129,7 +136,7 @@
     head.appendChild(amt);
     host.appendChild(head);
     parts.push(function (st) { amt.patch(st); });
-    host.appendChild(el('p', 'hint', 'Prices rise with each one you buy. Higher tiers make the tier below for free. Hold Buy to keep buying.'));
+    host.appendChild(el('p', 'hint', 'Prices rise with each one you buy. Higher tiers make the tier below for free. While you swipe coins in the cave, the whole brood works \u00d7' + rushX() + ' as fast. Hold Buy to keep buying.'));
     for (var k = 3; k >= 0; k--) {
       (function (k) {
         var u = lair.units[k];
@@ -156,9 +163,11 @@
           setText(own, fmt(n));
           var each = X.CHAIN[k].rate;
           var target = k === 0 ? lair.cur : lair.units[k - 1].name;
-          setText(sub, 'Each ' + u.one + ' ' + u.verb + ' ' + rateIn(each, target));
+          // one time unit per row (the per-unit rate's: these are always per hour), and the rush says so on the total
+          var unit = unitFor(each), rush = X.rushing(st);
+          setText(sub, 'Each ' + u.one + ' ' + u.verb + ' ' + rateIn(each, target, unit));
           setHidden(tot, !(n > 0));
-          if (n > 0) setText(tot, 'All ' + fmt(n) + ': ' + rateIn(X.unitRate(st, k), target));
+          if (n > 0) setText(tot, 'All ' + fmt(n) + ': ' + rateIn(X.unitRate(st, k) * X.speed(st), target, unit) + (rush ? ' (rush \u00d7' + rushX() + ')' : ''));
           // price of the selected amount (the button shows the count) + the next single unit's price
           var a = ui.buyAmt(st), cnt = a === 'max' ? Math.max(1, X.unitMax(st, k)) : a;
           var price = X.unitCost(st, k, cnt), next = X.unitPrice(st, k);
@@ -319,9 +328,9 @@
       var hero = el('div', 'ev-hero');
       var cur = el('div', 'ev-cur');
       var rates = el('div', 'ev-rates');
-      var rProd = el('span'), rCoin = el('span');
+      var rProd = el('span'), rCoin = el('span'), rRush = el('div', 'ev-rush');
       add(rates, rProd, rCoin);
-      add(hero, cur, el('div', 'ev-curname', lair.cur), rates);
+      add(hero, cur, el('div', 'ev-curname', lair.cur), rates, rRush);
       root.appendChild(hero);
       root.appendChild(el('p', 'ev-blurb', lair.blurb));
       patches.push(function (st) {
@@ -329,9 +338,14 @@
         setText(hsub, inf.left > 0 ? 'Closes in ' + span(inf.left) : 'Closing');
         setText(cur, fmt(st.events.cur));
         rProd.innerHTML = '';
-        add(rProd, el('b', null, '+' + rateStr(X.rate(st))), document.createTextNode(' from the brood'));
+        add(rProd, el('b', null, '+' + rateStr(X.rate(st) * X.speed(st), 's')), document.createTextNode(' from the brood'));
         rCoin.innerHTML = '';
         add(rCoin, el('b', null, '+' + fmt(X.perCoin(st))), document.createTextNode(' per swiped coin'));
+        // swipe rush: on for C.rushSec after the last coin; the sheet covers the cave, so it runs down while open
+        var on = X.rushing(st);
+        setCls(rRush, 'on', on);
+        setText(rRush, on ? 'Swipe rush \u00d7' + rushX() + ' \u00b7 ' + Math.ceil(num(st.events.rush)) + 's'
+          : 'Swipe coins in the cave: the brood works \u00d7' + rushX() + ' as fast');
       });
       // sections, each rebuilt on its own key
       var secs = [
@@ -395,6 +409,8 @@
   function viewKey(s) { var inf = X.info(s); return inf.status + ':' + (inf.synced ? s.events.id : '') + ':' + (s.events.over ? 1 : 0); }
 
   var sheetView = null, sheetTheme = '';
+  // the sheet covers the cave: tell the engine side so the swipe rush runs down slower while the player shops
+  function sheetFlag(on) { try { if (typeof X.setSheetOpen === 'function') X.setSheetOpen(on); } catch (e) { /* ignore */ } }
   function openLair() {
     var s = S();
     if (!s || !X.unlocked(s)) return;
@@ -402,13 +418,15 @@
     if (reveal && reveal.id !== s.events.id) reveal = null;
     var host = el('div');
     sheetView = buildLairView(s);
+    sheetFlag(true);
     host.appendChild(sheetView.node);
     sheetTheme = themeOf(X.info(s));
     var sheetNode = ui.sheet(host, {
       full: true, cls: 'ev-sheet ' + sheetTheme,
-      onClose: function () { sheetView = null; reveal = null; },
-      onAbort: function () { sheetView = null; },
+      onClose: function () { sheetView = null; reveal = null; sheetFlag(false); },
+      onAbort: function () { sheetView = null; sheetFlag(false); },
       patch: function (st) {
+        sheetFlag(!!sheetView);
         if (!sheetView) return;
         if (viewKey(st) !== sheetView.key) {          // event opened/closed under us: rebuild the whole view
           sheetView = buildLairView(st);
@@ -431,10 +449,37 @@
     text: function (s) {
       var inf = X.info(s);
       noteOffline(s);
-      if (inf.status === 'active') return inf.lair.name + ' · ' + span(inf.left);
+      if (inf.status === 'active') return (X.rushing(s) ? inf.lair.short + ' \u00d7' + rushX() : inf.lair.name) + ' · ' + span(inf.left);
       return 'Next lair in ' + span(inf.untilNext);
     },
+    front: function (s) { return X.rushing(s); },
     onPress: function () { openLair(); }
+  });
+
+  // ---------------------------------------------------------------- swipe rush countdown in the cave
+  // a small pill under the streak ring while the rush is on: always visible, however many chips the top bar holds
+  var RUSH_COL = { volcano: ['#ff9a5c', 'rgba(70,24,10,0.78)'], frost: ['#cfe9ff', 'rgba(16,34,58,0.78)'], sea: ['#9ff2d6', 'rgba(8,44,40,0.78)'] };
+  if (HOARD.cave && typeof HOARD.cave.addLayer === 'function') HOARD.cave.addLayer({
+    id: 'evRush', z: 6,
+    draw: function (g, w, h, t, dt, s) {
+      if (!s || !s.events || !X.rushing(s)) return;
+      var lair = X.lairById(s.events.lair);
+      if (!lair) return;
+      var col = RUSH_COL[lair.id] || RUSH_COL.volcano;
+      var txt = lair.short + ' rush \u00d7' + rushX() + ' \u00b7 ' + Math.ceil(num(s.events.rush)) + 's';
+      g.save();
+      g.font = '700 13px system-ui, -apple-system, "Segoe UI", sans-serif';
+      var tw = g.measureText(txt).width, x = 8, y = 58, ph = 22, pw = tw + 18;
+      if (x + pw > w - 8) pw = Math.max(40, w - 16);
+      g.fillStyle = col[1];
+      g.strokeStyle = col[0]; g.lineWidth = 1.5;
+      g.beginPath();
+      if (typeof g.roundRect === 'function') g.roundRect(x, y, pw, ph, ph / 2); else g.rect(x, y, pw, ph);
+      g.fill(); g.stroke();
+      g.fillStyle = col[0]; g.textAlign = 'left'; g.textBaseline = 'middle';
+      g.fillText(txt, x + 9, y + ph / 2 + 1, pw - 18);
+      g.restore();
+    }
   });
 
   // ---------------------------------------------------------------- Quests tab banner
@@ -507,7 +552,7 @@
     if (!p || typeof p !== 'object') return;
     var lair = p.lair ? X.lairById(p.lair) : null;
     try {
-      if (p.type === 'start' && lair) ui.toast(lair.name + ' is open!', 'Build its brood and swipe coins to win its treasures. ' + span((num(p.end) - X.now()) / 1000) + ' left. Open it from the chip up top.', 'gold');
+      if (p.type === 'start' && lair) ui.toast(lair.name + ' is open!', 'Build its brood and swipe coins to win its treasures: while you swipe, the brood works \u00d7' + rushX() + ' as fast. ' + span((num(p.end) - X.now()) / 1000) + ' left. Open it from the chip up top.', 'gold');
       else if (p.type === 'finish' && lair) ui.toast(lair.name + ' has closed.', p.quests + ' of ' + X.QUESTS.length + ' quests done.' + (p.cards && p.cards.length ? ' Unopened chests gave ' + p.cards.length + ' ' + plural(p.cards.length, 'treasure', 'treasures') + '.' : ''), '');
       else if (p.type === 'quest' && p.auto && lair) ui.toast('Quest Scribe', lair.name + ' quest ' + p.step + ' claimed.', 'moss');
       else if (p.type === 'chest' && p.auto && lair && p.cards && p.cards.length) ui.toast('Chest Kobold', 'Opened a ' + lair.name + ' chest: ' + p.cards.map(function (id) { var d = cardDef(id); return d ? d.name : id; }).join(', ') + '.', 'moss');

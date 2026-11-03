@@ -28,6 +28,8 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     gustCooldown: 45,
     gustMult: 3,
     gustFloorCoins: 6,       // a gust always pays at least this many coins
+    gustBonusCoins: 8,       // ... and pays its x3 on at most this many of them; the rest are swept up at normal worth,
+                             // so letting coins pile up for a gust never beats swiping over them (see cave.js doGust)
     gustFlickPx: 140,
     gustFlickMs: 220,
     gustFlickSpeed: 1400,
@@ -44,6 +46,16 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     // growth
     buildingGrowth: 1.15,
     buildingMinionGrowth: 1.10,
+    // Nest warmth: the brood itself warms the hoard. All building gold/s x (1 + W / broodW0) ^ broodPow, where
+    // W = the nest's size in Eggs (each unit counts the Eggs it took to raise it: broodEggs). So every 10x brood
+    // gives about x1.32 gold/s, and the Eggs a lower tier piles up keep raising gold all run long.
+    // broodCoin: share of the warmth that also reaches the coin gps-part (0 = buildings only, 1 = coins too). Half of
+    // it does, so swiping keeps a fair share of the gold while the nest grows (feel review: coins fell behind at 0)
+    broodEggs: [1, 10, 80, 640, 5120],
+    broodW0: 3e6,
+    broodPow: 0.12,
+    broodKnee: 1e10,         // past a nest of 1e10 Eggs (warmth ~x3) it grows with log(nest) only: later runs stay sane
+    broodCoin: 0.5,
     // rank
     maxRank: 12,
     rankGpsAfter: 6,         // ranks above this give +5% gold/s each
@@ -81,7 +93,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
   // Each tier produces the tier below it. Flat price per unit.
   var tiers = [
     { id: 'egg', name: 'Eggs', one: 'Egg', gold: 4, prevCost: 0, prod: 0, verb: '',
-      text: 'Warm dragon eggs. Spent on Raiding Parties and Wyrmlings.' },
+      text: 'Every Egg in the nest adds to the Nest bonus on building gold/s. Wyrmlings forage them; Drakes and Wyverns grow the nest fastest.' },
     { id: 'wyrmling', name: 'Wyrmlings', one: 'Wyrmling', gold: 60, prevCost: 10, prod: 1, verb: 'forages',
       text: 'Each Wyrmling forages 1 Egg per second.' },
     { id: 'drake', name: 'Drakes', one: 'Drake', gold: 1500, prevCost: 8, prod: 0.2, verb: 'raises',
@@ -95,21 +107,24 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
 
   // ---------------------------------------------------------------- buildings
   var buildings = [
-    { id: 'digger', name: 'Kobold Diggers', one: 'Kobold Digger', gold: 15, minionTier: -1, minions: 0, gps: 0.3, rank: 1,
+    { id: 'digger', name: 'Kobold Diggers', one: 'Kobold Digger', gold: 15, minionTier: -1, minions: 0, gps: 0.15, rank: 1,
       text: 'Small, tireless, and only slightly dishonest.' },
-    { id: 'raid', name: 'Raiding Parties', one: 'Raiding Party', gold: 140, minionTier: 0, minions: 15, gps: 1, rank: 2,
+    { id: 'raid', name: 'Raiding Parties', one: 'Raiding Party', gold: 140, minionTier: 0, minions: 15, gps: 0.6, rank: 2,
       text: 'Kobolds borrow gold from the villages. Forever.' },
-    { id: 'mine', name: 'Gold Mines', one: 'Gold Mine', gold: 1800, minionTier: 1, minions: 4, gps: 6, rank: 3,
+    { id: 'mine', name: 'Gold Mines', one: 'Gold Mine', gold: 1800, minionTier: 1, minions: 4, gps: 3.0, rank: 3,
       text: 'Wyrmlings breathe on the rock until it gives up its veins.' },
-    { id: 'tower', name: 'Alchemy Towers', one: 'Alchemy Tower', gold: 26000, minionTier: 2, minions: 4, gps: 40, rank: 4,
+    { id: 'tower', name: 'Alchemy Towers', one: 'Alchemy Tower', gold: 26000, minionTier: 2, minions: 4, gps: 14, rank: 4,
       text: 'Drake-fire turns lead to gold, and smoke to more smoke.' },
-    { id: 'well', name: 'Wishing Wells', one: 'Wishing Well', gold: 420000, minionTier: 3, minions: 3, gps: 320, rank: 5,
+    { id: 'well', name: 'Wishing Wells', one: 'Wishing Well', gold: 420000, minionTier: 3, minions: 3, gps: 112, rank: 5,
       text: 'Every wish tossed in lands in your hoard.' },
-    { id: 'moon', name: 'Gold Moons', one: 'Gold Moon', gold: 3000000, minionTier: 4, minions: 2, gps: 3500, rank: 6,
+    { id: 'moon', name: 'Gold Moons', one: 'Gold Moon', gold: 3000000, minionTier: 4, minions: 2, gps: 1225, rank: 6,
       text: 'Elder Dragons hang a second moon, and it is made of gold.' }
   ];
-  // 25 / 50 / 100 / 150 / 200 / 300 / 400 ... (every 100 after 200)
-  var buildingMilestones = [25, 50, 100, 150, 200];
+  // 10 / 25 / 50 / 100 / 150 / 200 / 300 / 400 ... (every 100 after 200). Feel pass: the early x2 at 10 gives every
+  // new building a quick "x2!" moment; base gold/s is lower to match (Nest warmth carries the growth instead).
+  var buildingMilestones = [10, 25, 50, 100, 150, 200];
+  // Ember kilns keep the original curve: 25 / 50 / 100 / 150 / 200, then every 100 (Ember balance unchanged)
+  var kilnMilestones = [25, 50, 100, 150, 200];
 
   // ---------------------------------------------------------------- lair upgrades
   // effect kinds: coinMult, scales (pct of gps per coin), sweep (coins/s), gustCd (seconds),
@@ -118,16 +133,16 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     { id: 'claws1', name: 'Sharper Claws I', cost: 100, text: 'Coins are worth x2.', effect: { kind: 'coinMult', mult: 2 } },
     { id: 'spill1', name: 'Overflowing Hoard', cost: 300, text: 'Coins spill into the cave x1.5 as often.', effect: { kind: 'spill', mult: 1.5 } },
     { id: 'broom1', name: 'Kobold Broom Crew I', cost: 500, text: 'A kobold sweeps up 0.5 coins/s for you.', req: { building: 'digger', n: 10 }, effect: { kind: 'sweep', rate: 0.5 } },
-    { id: 'scales1', name: 'Golden Scales I', cost: 1000, text: 'Each coin is also worth +1% of your gold/s.', effect: { kind: 'scales', pct: 0.01 } },
+    { id: 'scales1', name: 'Golden Scales I', cost: 1000, text: 'Coins also gain +1% of your gold/s (the Nest bonus counts half).', effect: { kind: 'scales', pct: 0.01 } },
     { id: 'wings1', name: 'Bigger Wings I', cost: 2000, text: 'Wing Gust recharges in 30s (was 45s).', effect: { kind: 'gustCd', sec: 30 } },
     { id: 'claws2', name: 'Sharper Claws II', cost: 5000, text: 'Coins are worth x2 again.', req: { upgrade: 'claws1' }, effect: { kind: 'coinMult', mult: 2 } },
     { id: 'gleam1', name: 'Hoard Gleam', cost: 25000, text: 'Gleaming treasures appear 30% more often.', effect: { kind: 'gleam', mult: 1.3 } },
     { id: 'broom2', name: 'Kobold Broom Crew II', cost: 50000, text: 'The broom crew sweeps 1.5 coins/s.', req: { building: 'digger', n: 50, upgrade: 'broom1' }, effect: { kind: 'sweep', rate: 1.5 } },
-    { id: 'scales2', name: 'Golden Scales II', cost: 200000, text: 'Each coin is also worth +2% more of your gold/s.', req: { upgrade: 'scales1' }, effect: { kind: 'scales', pct: 0.02 } },
+    { id: 'scales2', name: 'Golden Scales II', cost: 200000, text: 'Coins gain +2% more of your gold/s (the Nest bonus counts half).', req: { upgrade: 'scales1' }, effect: { kind: 'scales', pct: 0.02 } },
     { id: 'claws3', name: 'Sharper Claws III', cost: 500000, text: 'Coins are worth x2 again.', req: { upgrade: 'claws2' }, effect: { kind: 'coinMult', mult: 2 } },
     { id: 'wings2', name: 'Bigger Wings II', cost: 1000000, text: 'Wing Gust recharges in 20s.', req: { upgrade: 'wings1' }, effect: { kind: 'gustCd', sec: 20 } },
     { id: 'broom3', name: 'Kobold Broom Crew III', cost: 5000000, text: 'The broom crew sweeps 4 coins/s.', req: { building: 'digger', n: 100, upgrade: 'broom2' }, effect: { kind: 'sweep', rate: 4 } },
-    { id: 'scales3', name: 'Golden Scales III', cost: 40000000, text: 'Each coin is also worth +3% more of your gold/s.', req: { upgrade: 'scales2' }, effect: { kind: 'scales', pct: 0.03 } },
+    { id: 'scales3', name: 'Golden Scales III', cost: 40000000, text: 'Coins gain +3% more of your gold/s (the Nest bonus counts half).', req: { upgrade: 'scales2' }, effect: { kind: 'scales', pct: 0.03 } },
     { id: 'claws4', name: 'Sharper Claws IV', cost: 50000000, text: 'Coins are worth x2 again.', req: { upgrade: 'claws3' }, effect: { kind: 'coinMult', mult: 2 } }
   ];
 
@@ -182,7 +197,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     { id: 'alembic', name: 'Ashen Alembic', rarity: 'rare', target: 'b:tower', flavor: 'Whatever goes in, gold comes out. Eventually.', describe: bCard('Alchemy Towers') },
     { id: 'broodbrooch', name: 'Brood-Mother\'s Brooch', rarity: 'rare', target: 't:2', flavor: 'Pinned to the softest scale of a watchful mother.', describe: tCard('Drakes', 'raise Wyrmlings') },
     { id: 'galefeather', name: 'Gale Feather', rarity: 'rare', target: 'gust', flavor: 'Plucked from a storm that thought it was a bird.',
-      describe: function (l) { return 'Wing Gust coins are worth x' + fmtMult(3 * (1 + 0.25 * lv(l))) + ' (was x3).'; } },
+      describe: function (l) { return 'Wing Gust bonus coins are worth x' + fmtMult(3 * (1 + 0.25 * lv(l))) + ' (was x3).'; } },
     { id: 'emberglass', name: 'Hourglass of Embers', rarity: 'rare', target: 'frenzy', flavor: 'The sand burns, and so it falls slowly.',
       describe: function (l) { return 'Gold Frenzy lasts +' + (3 * lv(l)) + 's longer.'; } },
     { id: 'cometshard', name: 'Comet Shard', rarity: 'rare', target: 'streak', flavor: 'Fell fast, burned bright, never stopped.',
@@ -218,6 +233,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     tierMilestones: tierMilestones,
     buildings: buildings,
     buildingMilestones: buildingMilestones,
+    kilnMilestones: kilnMilestones,
     upgrades: upgrades,
     treasures: treasures,
     rarities: rarities,
@@ -266,7 +282,16 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     return s + SUFFIX[g];
   }
 
-  function fmtRate(n) { return fmt(n) + '/s'; }
+  // rates read better rounded than floored, and small ones need two significant digits: 0.15/s, 0.75/s, 26/s
+  // (fmt floors on purpose: gold on hand and prices must never look bigger than they are). >= 100 -> fmt.
+  function fmtR(n) {
+    n = +n;
+    if (!isFinite(n) || n >= 100 || n <= 0) return fmt(n);
+    if (n < 1) return String(Number(n.toPrecision(2)));
+    if (n < 10) return String(Math.round(n * 10) / 10);
+    return String(Math.round(n));
+  }
+  function fmtRate(n) { return fmtR(n) + '/s'; }
 
   function pad2(x) { return (x < 10 ? '0' : '') + x; }
   function fmtTime(sec) {
@@ -287,6 +312,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
 
   HOARD.fmt = fmt;
   HOARD.fmtRate = fmtRate;
+  HOARD.fmtR = fmtR;
   HOARD.fmtTime = fmtTime;
 
   // ---------------------------------------------------------------- boot hook (v2)

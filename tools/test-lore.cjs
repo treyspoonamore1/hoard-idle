@@ -371,5 +371,27 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
   check(a.legend === 0 && a.legendPts === 0 && !a.lore.greed && a.lore.auto_dig === 1 && a.myths === 1, 'Ascend still resets Legend and Power lore, keeps automation');
 }
 
+// ---------------------------------------------------------------- Master Builders: gain net of the Nest bonus
+// late in a run a building's Egg cost shrinks the nest; buildGain must see that (review: auto-buys that lowered gold/s)
+{
+  const trial = (b, tiers) => {
+    let s = E.newState(); s.rank = 6; s.gold = 1e30; Object.assign(s.buildings, b); s.tiers = tiers.slice(); s = E.deserialize(E.serialize(s));
+    const pred = L.buildGain(s, 'raid'), g0 = E.stats(s).baseGps;
+    const ok = E.buyBuilding(s, 'raid', 1), g1 = E.stats(s).baseGps;
+    return { ok, pred, real: g1 - g0, g0 };
+  };
+  const cases = [
+    [{ digger: 10, raid: 10, mine: 5 }, [5e4, 100, 0, 0, 0]],
+    [{ digger: 120, raid: 120, mine: 80, tower: 50, well: 25, moon: 10 }, [3e8, 1e5, 2e3, 0, 0]],
+    [{ digger: 150, raid: 150, mine: 100, tower: 60, well: 30, moon: 12 }, [1e9, 1e6, 1e4, 0, 0]]
+  ];
+  cases.forEach(([b, t], k) => {
+    const r = trial(b, t);
+    check(r.ok && Math.abs(r.pred - r.real) <= 1e-6 * r.g0 + 1e-9, 'buildGain case ' + k + ': predicted ' + r.pred.toFixed(3) + ' = real ' + r.real.toFixed(3) + ' gold/s');
+  });
+  const late = trial(cases[2][0], cases[2][1]);
+  check(late.real < 0 && late.pred < 0, 'a Raiding Party that costs more Nest than it adds is valued below 0 (' + late.pred.toFixed(1) + '/s), so Master Builders skips it');
+}
+
 console.log((fails ? 'FAILED ' + fails + ' of ' : 'ALL ') + (passes + fails) + ' lore checks' + (fails ? '' : ' passed'));
 process.exit(fails ? 1 : 0);

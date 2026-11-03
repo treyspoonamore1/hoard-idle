@@ -92,6 +92,21 @@ function missionCands(s) {
   }
   return out;
 }
+// Nest warmth (feel pass): building gold/s x (1 + nest / W0)^p, nest = brood counted in Eggs. A player sees the
+// "x1.3 gold/s" it gives, so the sim values brood buys by the warmth they add now plus ~60 s of what they raise below.
+function broodCands(s, st, inc, cands) {
+  if (!(C.broodPow > 0) || !E.warmthAt) return;
+  const eq = C.broodEggs, W = st.nestSize || 0, wf = E.warmthAt, w0 = wf(W);
+  for (let i = 0; i < 5; i++) {
+    if (!E.isUnlocked(s, 'tier', i)) continue;
+    const one = planGold(s, i, s.tiers[i] + 1); if (!isFinite(one) || one <= 0) continue;
+    const n = Math.max(1, Math.floor(s.gold * 0.25 / one));
+    const cost = planGold(s, i, s.tiers[i] + n); if (!isFinite(cost)) continue;
+    let dv = st.baseGps * (wf(W + n * eq[i] - (i > 0 ? n * D.tiers[i].prevCost * eq[i - 1] : 0)) / w0 - 1);
+    if (i > 0) dv += st.baseGps * (wf(W + n * st.tierUnitRate[i] * 60 * eq[i - 1]) / w0 - 1) / 2;
+    if (dv > inc * 1e-4) cands.push({ kind: 'tb', id: i, n, cost, dv });
+  }
+}
 function shop(s, prof) {
   for (let guard = 0; guard < 400; guard++) {
     const st = E.stats(s), inc = Math.max(1e-9, model(s, prof)), cands = [];
@@ -118,6 +133,7 @@ function shop(s, prof) {
       const dv = st.tierUnitRate[i] * tierEq(s, i - 1) * 0.5;
       if (dv > 0 && isFinite(cost)) cands.push({ kind: 't', id: i, cost, dv });
     }
+    broodCands(s, st, inc, cands);
     let best = null;
     for (const c of cands) {
       if (!(c.dv > 0)) continue;
@@ -133,6 +149,7 @@ function shop(s, prof) {
       ok = E.buyBuilding(s, best.id, n);
     } else if (best.kind === 'u') ok = E.buyUpgrade(s, best.id);
     else if (best.kind === 'mt') ok = ensure(s, best.id, best.n);
+    else if (best.kind === 'tb') ok = ensure(s, best.id, s.tiers[best.id] + best.n);
     else {
       const n = Math.max(1, Math.floor(s.gold * 0.25 / Math.max(best.cost, 1e-9)));
       ok = ensure(s, best.id, s.tiers[best.id] + n) || ensure(s, best.id, s.tiers[best.id] + 1);
@@ -256,7 +273,8 @@ function run(prof) {
     if (E.gustReady(s)) gustWait += dt; else gustWait = 0;
     if (E.gustReady(s) && (swiping || (autoG && (pool >= 8 || gustWait >= 10))) && E.useGust(s)) {
       const n = Math.floor(pool), avg = n > 0 ? poolV / pool : 0;
-      if (n > 0) { E.coinCollected(s, n, swiping ? 3 : 1, avg * st.gustWorthMult); pool -= n; poolV -= n * avg; }
+      const gv = avg * (1 + (st.gustWorthMult - 1) * Math.min(n, C.gustBonusCoins || n) / Math.max(1, n)); // x3 on <= gustBonusCoins
+      if (n > 0) { E.coinCollected(s, n, swiping ? 3 : 1, gv); pool -= n; poolV -= n * avg; }
       const fl = Math.max(0, (C.gustFloorCoins || 0) - n);
       if (fl > 0) E.coinCollected(s, fl, swiping ? 3 : 1, st.gustWorthMult);
       gustWait = 0;

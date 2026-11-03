@@ -389,15 +389,72 @@
   }
 
   // ---------------------------------------------------------------- top bar
+  // ---------------------------------------------------------------- gold/s growth feel
+  // Samples building gold/s (without Frenzy) twice a second. Shows the growth over the last full minute next to the
+  // rate ("+34%/min") and pops a "Gold/s x2!" burst whenever gold/s jumps >= x1.5 within ~3 s (a milestone, a new
+  // building, an upgrade, a big brood buy).
+  var gpsHist = [], gpsLastT = 0, gpsJumpT = 0, gpsTrendTxt = null;
+  function multShort(m) { return m >= 10 ? String(Math.round(m)) : (Math.round(m * 10) / 10).toString(); }
+  function gpsFeel(state, st) {
+    var now = Date.now();
+    if (now - gpsLastT < 500) return;
+    gpsLastT = now;
+    var g = num(st.baseGps);
+    var last = gpsHist.length ? gpsHist[gpsHist.length - 1] : null;
+    // a Long Sleep, Ascend or load drops gold/s: start the history over (no fake trend)
+    if (last && (g < last.g * 0.5 || now - last.t > 5000)) gpsHist.length = 0;
+    gpsHist.push({ t: now, g: g });
+    while (gpsHist.length > 1 && gpsHist[0].t < now - 61000) gpsHist.shift();
+    // burst: gold/s >= x1.5 of the lowest value in the last 3 s
+    var lo = g;
+    for (var i = gpsHist.length - 1; i >= 0 && gpsHist[i].t >= now - 3000; i--) if (gpsHist[i].g > 0) lo = Math.min(lo, gpsHist[i].g);
+    if (lo > 0 && g >= lo * 1.5 && g >= 1 && now - gpsJumpT > 2500) {
+      gpsJumpT = now;
+      for (var j = gpsHist.length - 1; j >= 0 && gpsHist[j].t >= now - 3000; j--) gpsHist[j].g = Math.max(gpsHist[j].g, g / 1.49);
+      gpsBurst(g / lo);
+    }
+    // trend: the real rise over the last minute, shown only once a full minute of history exists (never scaled up
+    // from a shorter window: right after a load or one big buy that read as "x100/min")
+    var txt = '';
+    var old = null;
+    for (var k = 0; k < gpsHist.length; k++) if (gpsHist[k].g > 0 && gpsHist[k].t <= now - 55000) old = gpsHist[k];
+    if (old && old.g > 0 && g > old.g) {
+      var perMin = g / old.g;
+      if (perMin >= 1.02) txt = perMin < 2 ? '+' + Math.round((perMin - 1) * 100) + '%/min' : '×' + multShort(perMin) + '/min';
+    }
+    if (txt !== gpsTrendTxt && $.gpsTrend) {
+      gpsTrendTxt = txt;
+      setHidden($.gpsTrend, !txt);
+      setText($.gpsTrend, txt);
+    }
+  }
+  function gpsBurst(ratio) {
+    if ($.gps) { $.gps.classList.remove('jump'); void $.gps.offsetWidth; $.gps.classList.add('jump'); }
+    var C = HOARD.cave;
+    try {
+      if (C && C.float && C.anchor) {
+        var a = C.anchor('hoard');
+        C.float(a.x, a.y - 54, 'Gold/s ×' + multShort(ratio) + '!', true, '#ffe08a');
+        if (!reducedMotion() && C.burst) C.burst(a.x, a.y - 30, 16, 'star');
+      }
+    } catch (e) { /* ignore */ }
+    buzz(12);
+  }
+
   function frameTop(state, st) {
     setText($.gold, fmt(state.gold));
     setText($.gps, '+' + fmtRate(st.gps));
+    gpsFeel(state, st);
     var sm = 1;
     try { sm = HOARD.cave && HOARD.cave.streak ? num(HOARD.cave.streak(), 1) : 1; } catch (e) { sm = 1; }
     setHidden($.chipStreak, !(sm > 1));
     if (sm > 1) setText($.chipStreak, '×' + multStr(sm) + ' streak');
     setHidden($.chipFrenzy, !st.frenzyActive);
     if (st.frenzyActive) setText($.chipFrenzy, 'Frenzy ' + clock(st.frenzyLeft));
+    // Nest bonus chip: the brood's x on all building gold/s; tap to see the Brood
+    var bm = num(st.broodMult, 1);
+    setHidden($.chipBrood, !(bm >= 1.05));
+    if (bm >= 1.05) setText($.chipBrood, 'Nest ×' + multStr(bm));
     setHidden($.chipEmber, !st.emberActive);
     if (st.emberActive) setText($.chipEmber, 'Ember ' + clock(st.emberLeft));
     var lg = num(state.legend), lp = num(state.legendPts);
@@ -478,7 +535,8 @@
     return b;
   }
 
-  function milestonePatch(row, kind, owned) {
+  // gain (optional): what the x2 adds, e.g. '+1.2K/s'
+  function milestonePatch(row, kind, owned, gain) {
     var next = E.nextMilestone(kind, owned);
     if (next === null || next === undefined) {
       setW(row.mbar.fill, 1);
@@ -488,7 +546,7 @@
     }
     setW(row.mbar.fill, owned / next);
     setText(row.mL, fmt(owned) + '/' + fmt(next));
-    setText(row.mR, '→ ×2 output');
+    setText(row.mR, gain ? '→ ×2 (' + gain + ')' : '→ ×2 output');
   }
   function milestoneBits(row, host) {
     row.mbar = bar();
@@ -497,6 +555,75 @@
     row.mR = el('span');
     add(row.mlab, row.mL, row.mR);
     add(host, row.mbar, row.mlab);
+  }
+
+  // ================================================================ NEST BONUS
+  // The brood boosts the hoard: all building gold/s x warmth(nest), nest = brood size counted in Eggs. Player-facing
+  // name: "Nest bonus" (Ember already has its own "warmth").
+  var NEST_SEC = 300; // brood previews look this far ahead ("+1.2K gold/s within 5 min")
+  function nestOn(state) { return E.isUnlocked(state, 'tier', 1) || num(state.tiers && state.tiers[0]) > 0; }
+  // the first 10x step of the nest above `nest` whose bonus is at least `min` (so a goal never promises "x1")
+  function nestGoal(nest, min) {
+    var goal = 10, gw = 1;
+    while (goal < 1e30 && (goal <= nest || (gw = num(E.warmthAt(goal), 1)) < min)) goal *= 10;
+    return { at: goal, x: gw };
+  }
+  // extra building gold/s that buying n of tier i adds within NEST_SEC through the Nest bonus (it pays the tier below)
+  function nestBuyGain(s, st, i, n) {
+    if (typeof E.nestIn !== 'function' || !(i > 0) || !(n > 0)) return 0;
+    var w = num(st.broodMult, 1), bg = num(st.baseGps);
+    if (!(w > 0) || !(bg > 0)) return 0;
+    var a = num(E.warmthAt(E.nestIn(s, NEST_SEC))), b = num(E.warmthAt(E.nestIn(s, NEST_SEC, i, n)));
+    return b > a ? bg / w * (b - a) : 0;
+  }
+  // the brood tier whose next buy grows the Nest bonus most per gold (for the card's tip); -1 if none
+  function bestNestTier(s, st) {
+    var best = -1, bestV = 0;
+    for (var i = 1; i < D.tiers.length; i++) {
+      if (!E.isUnlocked(s, 'tier', i)) continue;
+      var c = E.tierCost(s, i, 1), g = num(c.gold) + num(c.prev) * eqGold(s, i - 1);
+      var ng = nestBuyGain(s, st, i, 1), v = g > 0 && ng >= 0.01 ? ng / g : 0; // same floor as the rows' "Buy" line
+      if (v > bestV) { bestV = v; best = i; }
+    }
+    return best;
+  }
+  function eqGold(s, i) { // gold that one unit of tier i takes to raise from scratch
+    var g = 0;
+    for (var q = 0; q <= i; q++) { var c = E.tierCost(s, q, 1); g = num(c.gold) + (q > 0 ? num(D.tiers[q].prevCost) * g : 0); }
+    return g;
+  }
+  function warmCard(where) {
+    var c = el('div', 'card warm');
+    var r = el('div', 'row');
+    var g = el('div', 'grow');
+    c.x = el('div', 'warm-x num', '×1');
+    c.t = el('div', 'sub');
+    c.tip = el('div', 'sub warmline');
+    add(g, el('div', 'name', 'Nest bonus'), c.t, c.tip);
+    add(r, g, c.x);
+    c.appendChild(r);
+    c.patch = function (s, st) {
+      var w = num(st.broodMult, 1), nest = num(st.nestSize);
+      setText(c.x, '×' + multStr(w));
+      var soon = typeof E.nestIn === 'function' ? num(E.warmthAt(E.nestIn(s, NEST_SEC)), w) : w;
+      var bt = bestNestTier(s, st);
+      setHidden(c.tip, !(soon > w * 1.005) && bt < 0);
+      setText(c.tip, (soon > w * 1.005 ? 'In 5 min at this pace: ×' + multStr(soon) + '. ' : '') +
+        (bt > 0 ? 'Grow it fastest with more ' + D.tiers[bt].name + '.' : ''));
+      if (w < 1.05) {
+        // barely warm yet: name a goal instead of "x1" (the first 10x step of the nest worth x1.05+, as the Eggs bar)
+        var goal = nestGoal(nest, 1.05);
+        setText(c.t, where === 'lair'
+          ? 'Your brood boosts every building: a nest of ' + fmt(goal.at) + ' Eggs → ×' + multStr(goal.x) + ' gold/s.'
+          : 'A nest of ' + fmt(goal.at) + ' Eggs boosts all building gold/s ×' + multStr(goal.x) + '. Yours: ' + fmt(nest) + ' Eggs.');
+        return;
+      }
+      var next = num(E.warmthAt(nest * 10 + 10), w), gain = w > 0 ? next / w : 1;
+      setText(c.t, where === 'lair'
+        ? 'Your brood boosts every building. 10× more brood → ×' + multStr(gain) + ' gold/s.'
+        : 'All building gold/s ×' + multStr(w) + ' from a nest of ' + fmt(nest) + ' Eggs. 10× more → ×' + multStr(gain) + '.');
+    };
+    return c;
   }
 
   // ================================================================ LAIR
@@ -536,6 +663,11 @@
     }
 
     root.appendChild(secHead('Buildings'));
+    if (nestOn(state)) {
+      var wc = warmCard('lair');
+      root.appendChild(wc);
+      parts.push(function (s, st) { wc.patch(s, st); });
+    }
     var lockedShown = false;
     D.buildings.forEach(function (bd) {
       if (!E.isUnlocked(state, 'building', bd.id)) {
@@ -582,7 +714,7 @@
         var max = E.buildingMax(s, bd.id);
         setCls(row.btn, 'can', max >= (amt === 'max' ? 1 : amt));
         setText(row.btn.s, '×' + fmt(n));
-        milestonePatch(row, 'building', owned);
+        milestonePatch(row, 'building', owned, total > 0 ? '+' + fmtRate(total) : '');
       });
     });
 
@@ -609,7 +741,12 @@
     head.appendChild(tog);
     root.appendChild(head);
     parts.push(function (s) { tog.patch(s); });
-    root.appendChild(el('p', 'hint', 'Each kind of dragon raises the kind below it. Hold Buy to hatch many.'));
+    root.appendChild(el('p', 'hint', 'Each kind of dragon raises the kind below it, and the whole nest boosts your buildings. Hold Buy to hatch many.'));
+    if (nestOn(state)) {
+      var wc = warmCard('brood');
+      root.appendChild(wc);
+      parts.push(function (s, st) { wc.patch(s, st); });
+    }
 
     var shownLocked = false;
     D.tiers.forEach(function (td, i) {
@@ -628,7 +765,11 @@
       var g1 = el('div', 'grow');
       row.prod = el('div', 'sub num');
       row.net = el('div', 'sub num');
-      add(g1, el('div', 'name', td.name), row.prod, row.net);
+      row.warm = el('div', 'sub num');
+      row.proj = el('div', 'sub num warmline');
+      var uses = tierUses(i);
+      add(g1, el('div', 'name', td.name), row.prod, row.net, row.proj, row.warm);
+      if (uses) g1.appendChild(el('div', 'sub', uses));
       row.owned = el('div', 'owned');
       add(r1, g1, row.owned);
       var r2 = el('div', 'row');
@@ -649,11 +790,20 @@
       parts.push(function (s, st) {
         var cnt = Math.floor(num(s.tiers[i]));
         setText(row.owned, fmt(cnt));
+        // share of the nest (once the Nest bonus is real) and what one unit counts as
+        var eggsEach = (D.C.broodEggs && num(D.C.broodEggs[i])) || 0, nest = num(st.nestSize), warm = num(st.broodMult, 1) >= 1.05;
+        var share = nest > 0 ? cnt * eggsEach / nest : 0;
+        var pc = share > 0.995 ? '99%+' : (share < 0.01 && cnt > 0 ? '<1%' : Math.round(share * 100) + '%');
+        var bits = [];
+        if (i > 0 && eggsEach > 0) bits.push('≈' + fmt(eggsEach) + ' Eggs each');
+        if (warm && eggsEach > 0 && cnt > 0) bits.push(pc + ' of nest');
+        setText(row.warm, bits.join(' · '));
+        setHidden(row.warm, !bits.length);
         if (i === 0) {
           setText(row.prod, td.text || 'Spent on buildings and Wyrmlings.');
         } else {
           var unit = st.tierUnitRate ? num(st.tierUnitRate[i]) : td.prod;
-          setText(row.prod, 'Each ' + td.verb + ' ' + fmt(unit) + ' ' + tierName(i - 1, 2) + '/s');
+          setText(row.prod, 'Each ' + td.verb + ' ' + HOARD.fmtR(unit) + ' ' + tierName(i - 1, 2) + '/s');
         }
         var net = st.tierRates ? num(st.tierRates[i]) : 0;
         var nextOn = !!D.tiers[i + 1] && E.isUnlocked(s, 'tier', i + 1);
@@ -669,10 +819,31 @@
         var max = E.tierMax(s, i);
         setCls(row.btn, 'can', max >= (amt === 'max' ? 1 : amt));
         setText(row.btn.s, '×' + fmt(n));
-        milestonePatch(row, 'tier', cnt);
+        // what this buy does for gold: the nest it grows within 5 min, as building gold/s
+        var ng = i > 0 ? nestBuyGain(s, st, i, n) : 0;
+        setHidden(row.proj, !(ng >= 0.01));
+        if (ng >= 0.01) setText(row.proj, 'Buy ×' + fmt(n) + ': +' + HOARD.fmtR(ng) + ' gold/s within 5 min');
+        if (i === 0) nestPatch(row, st);
+        else milestonePatch(row, 'tier', cnt);
       });
     });
     return { root: root, patch: function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); } };
+  }
+  // what a tier is spent on: the buildings that cost it, and the next tier up ("Pays for Gold Mines and Drakes")
+  function tierUses(i) {
+    var out = [];
+    D.buildings.forEach(function (b) { if (b.minionTier === i) out.push(b.name); });
+    if (D.tiers[i + 1] && num(D.tiers[i + 1].prevCost) > 0) out.push(D.tiers[i + 1].name);
+    if (!out.length) return '';
+    return 'Pays for ' + (out.length > 1 ? out.slice(0, -1).join(', ') + ' and ' + out[out.length - 1] : out[0]) + '.';
+  }
+  // Eggs have no production milestones; their bar shows the nest's way to its next 10x that gives a real bonus
+  // (never "-> x1": while the nest is small it names the first step worth x1.05 or more)
+  function nestPatch(row, st) {
+    var nest = num(st.nestSize), goal = nestGoal(nest, 1.05);
+    setW(row.mbar.fill, Math.log10(1 + nest) / Math.log10(1 + goal.at));
+    setText(row.mL, 'Nest ' + fmt(nest) + '/' + fmt(goal.at));
+    setText(row.mR, '→ Nest ×' + multStr(goal.x));
   }
   function keyBrood(state) { return 'B' + state.rank; }
 
@@ -1420,7 +1591,7 @@
         n.setAttribute('data-chip', c.id);
         n.hidden = true; n._h = true;
         $.chips.appendChild(n);
-        c._el = n; c._cls = '';
+        c._el = n; c._cls = ''; c._front = false;
       });
     }
     var ovf = $.chips.scrollWidth > $.chips.clientWidth + 1;
@@ -1430,6 +1601,14 @@
       if (!c._el) continue;
       var vis = !c.visible || !!safe('chip.visible:' + c.id, c.visible, [state, st], false);
       setHidden(c._el, !vis);
+      // front(state): while true the chip sits right after gold/s, before the built-in chips (an event lair's swipe
+      // rush is only on while the player swipes, exactly when the streak chip would push it off a phone screen)
+      var fr = vis && typeof c.front === 'function' && !!safe('chip.front:' + c.id, c.front, [state, st], false);
+      if (fr !== c._front) {
+        c._front = fr;
+        if (fr) $.chips.insertBefore(c._el, $.chipBrood || $.chipStreak || null);
+        else $.chips.appendChild(c._el);
+      }
       if (vis && typeof c.text === 'function') setText(c._el, safe('chip.text:' + c.id, c.text, [state, st], ''));
       if (vis && typeof c.classes === 'function') {
         // dynamic extra classes (e.g. a theme tint, a "claimable" glow): only touch the DOM when they change
@@ -1499,7 +1678,16 @@
       if (m.kind === 'building') { for (var i = 0; i < D.buildings.length; i++) if (D.buildings[i].id === m.id) name = D.buildings[i].name; }
       else if (m.kind === 'tier' && D.tiers[m.id]) name = D.tiers[m.id].name;
       if (!name) return;
-      toast(name + ' ×2', 'at ' + fmt(m.count) + ' owned.', 'gold');
+      var more = '';
+      if (m.kind === 'building') {
+        try {
+          // stats are already after the buy: this building's share of gold/s, doubled just now
+          var s = S(), st = s ? E.stats(s) : null, tot = st ? num(st.gps) : 0;
+          var sh = tot > 0 && st.buildingGps ? num(st.buildingGps[m.id]) / tot : 0;
+          if (sh > 0 && sh < 1) more = ' · gold/s ×' + multStr(1 / (1 - sh / 2));
+        } catch (e) { more = ''; }
+      }
+      toast(name + ' ×2', 'at ' + fmt(m.count) + ' owned' + more + '.', 'gold');
     });
   }
 
@@ -1650,10 +1838,13 @@
     if (inited) { view = null; dirty = true; patchNow(); return; }
     $.gold = document.getElementById('gold');
     $.gps = document.getElementById('gps');
+    $.gpsTrend = document.getElementById('gps-trend');
     $.chips = document.querySelector('#top .chips');
     $.chipStreak = document.getElementById('chip-streak');
     $.chipFrenzy = document.getElementById('chip-frenzy');
     $.chipEmber = document.getElementById('chip-ember');
+    $.chipBrood = document.getElementById('chip-brood');
+    if ($.chipBrood) $.chipBrood.addEventListener('click', function () { setTab('brood'); });
     $.chipLegend = document.getElementById('chip-legend');
     if ($.chipLegend) $.chipLegend.addEventListener('click', function () {
       if (HOARD.uiLore && typeof HOARD.uiLore.goLore === 'function') HOARD.uiLore.goLore(); else setTab('legend');

@@ -1,6 +1,6 @@
 /* Hoard — js/events.js — event lairs (SPEC-V2 section 3). Engine-side module, Node-safe: no DOM, no window.
  * Owns state.events (addStateDefaults), the 'events' tick hook (schedule, live + offline production inside the
- * event window, swipe bonus) and the 9 exclusive event cards (registerCards, chest:false, each with a mod()).
+ * event window, swipe bonus, swipe rush) and the 9 exclusive event cards (registerCards, chest:false, with mod()s).
  *
  * Schedule (wall clock, UTC-anchored, never Math.random): slot k starts at ANCHOR + k x 96 h; its lair
  * (k mod 3: Volcano Lair, Frozen Peak, Sunken Ship) runs 72 h, then a 24 h break. The player's first event starts
@@ -33,20 +33,27 @@
     startCur: 30,                  // currency each event starts with (three Imps right away)
     coinBase: 1,                   // currency per swiped coin ...
     coinRate: 0.05,                // ... plus this many seconds of tier-1 production per coin
+    rushMult: 25,                  // swipe rush: while the player swipes coins, the whole brood works this many times
+    rushSec: 20,                   // as fast, until this many seconds after the last coin (live play only, never offline)
+    rushSheetDrain: 0.25,          // while the lair sheet is open (it covers the cave) the rush runs down 4x slower, so a
+                                   // shopping trip keeps it: 20 s of rush last 80 s of buying (bounded, never frozen)
     autoEvery: 1                   // seconds between Quest Scribe / Chest Kobold passes (live only)
   };
   // one chain shape for all three lairs (fair rotation); flavour differs.
-  // tier 0 makes currency, tier k makes tier k-1. rate = units (or currency) per second per owned unit.
+  // tier 0 makes currency, tier k makes tier k-1. rate = units (or currency) per second per owned unit, at normal
+  // speed; the swipe rush (C.rushMult) runs the whole chain that many times as fast while the player swipes.
   // Price of the next unit of tier k = cost x grow^bought[k]: it rises with each unit the player BUYS of that tier,
   // never with units the tier above produced (those are free). So piling everything into tier 0 runs into a steep
   // price wall, while a higher tier keeps handing out lower-tier units without paying that wall: the best buy moves
-  // up the chain over the event (imps first, hounds after a few minutes, giants within the hour, wyrms after
-  // ~4 h). Tuned with tools/test-lair-strategy.cjs (strategy comparison) and tools/test-events.cjs (pacing).
+  // up the chain. With the rush on (active play) hounds pay off within the first minutes, giants within ~10 min,
+  // wyrms within the first 1-1.5 h, and income grows ~10x every 10-20 min, so a player who swipes and buys
+  // non-stop finishes the quest line in ~2-2.5 h; idle production (no rush) carries a 4 x 5 min/day player
+  // through it in ~2 days. Tuned with tools/test-lair-strategy.cjs (strategies, pacing) and tools/test-events.cjs.
   var CHAIN = [
     { cost: 10, grow: 1.12, rate: 0.1 },       // 360 currency/h each
     { cost: 100, grow: 1.10, rate: 0.02 },     // 72 tier-0 units/h each
     { cost: 5000, grow: 1.09, rate: 0.002 },   // 7.2 tier-1 units/h each
-    { cost: 250000, grow: 1.08, rate: 0.0004 } // 1.44 tier-2 units/h each
+    { cost: 2e7, grow: 1.08, rate: 0.0004 }    // 1.44 tier-2 units/h each
   ];
   var MAXBUY = 1e5;               // most units one buy can take (prices outgrow any wallet long before this)
   var LMAX = Math.log(MAXN);      // log-space clamp for prices
@@ -91,8 +98,8 @@
     { kind: 'own', k: 3, n: 1, cards: 1 },
     { kind: 'coins', n: 2000, cards: 1 },
     { kind: 'earn', n: 5e10, cards: 1 },
-    { kind: 'earn', n: 4e11, cards: 1 },
-    { kind: 'earn', n: 2e12, cards: 3, all: true }
+    { kind: 'earn', n: 5e11, cards: 1 },
+    { kind: 'earn', n: 3e12, cards: 3, all: true }
   ];
 
   // ---------------------------------------------------------------- exclusive cards (9, never in normal chests)
@@ -165,6 +172,7 @@
       chestCards: [],  // card count per unopened chest
       got: 0,          // event cards collected this event
       at: 0,           // wall ms up to which production has been simulated
+      rush: 0,         // seconds of "swipe rush" left (the brood works x rushMult); live only, never offline
       offGain: 0,      // currency produced in the last offline() run (UI note)
       last: {},        // summary of the previous event { id, lair, q, got }
       joined: 0, completed: 0
@@ -181,6 +189,7 @@
     ['firstStart', 'firstSlot', 'start', 'end', 'at'].forEach(function (k) { o[k] = Math.floor(fin(saved[k], o[k])); });
     if (o.firstStart < 0) o.firstStart = 0;
     ['cur', 'earned', 'coins', 'fromCoins', 'offGain', 'joined', 'completed', 'got'].forEach(function (k) { o[k] = pos(saved[k]); });
+    o.rush = Math.min(C.rushSec, pos(saved.rush));
     o.q = Math.max(0, Math.min(QUESTS.length, Math.floor(pos(saved.q))));
     o.chests = Math.max(0, Math.min(50, Math.floor(pos(saved.chests))));
     o.chestCards = [];
@@ -293,46 +302,60 @@
     t = t === undefined ? now() : t;
     return t >= e.start && t < e.end;
   }
+  // saturating clamp for production: overflow pins at MAXN instead of wiping the value to 0
+  function sat(x) { x = +x; return x !== x || x <= 0 ? 0 : (x > MAXN ? MAXN : x); }
   // exact closed form of the 4-tier chain over sec seconds (the top tier is constant)
   function produce(e, sec) {
     if (!(sec > 0)) return 0;
     var u = e.units, r0 = CHAIN[0].rate, r1 = CHAIN[1].rate, r2 = CHAIN[2].rate, r3 = CHAIN[3].rate;
     var t = sec, t2 = t * t / 2, t3 = t2 * t / 3, t4 = t3 * t / 4;
-    var a0 = u[0], a1 = u[1], a2 = u[2], a3 = u[3];
+    var a0 = sat(u[0]), a1 = sat(u[1]), a2 = sat(u[2]), a3 = sat(u[3]);
     var gain = r0 * (a0 * t + r1 * (a1 * t2 + r2 * (a2 * t3 + r3 * a3 * t4)));
-    u[2] = pos(a2 + r3 * a3 * t);
-    u[1] = pos(a1 + r2 * (a2 * t + r3 * a3 * t2));
-    u[0] = pos(a0 + r1 * (a1 * t + r2 * (a2 * t2 + r3 * a3 * t3)));
-    gain = pos(gain);
-    e.cur = cl(pos(e.cur) + gain);
-    e.earned = cl(pos(e.earned) + gain);
+    u[2] = sat(a2 + r3 * a3 * t);
+    u[1] = sat(a1 + r2 * (a2 * t + r3 * a3 * t2));
+    u[0] = sat(a0 + r1 * (a1 * t + r2 * (a2 * t2 + r3 * a3 * t3)));
+    gain = sat(gain);
+    e.cur = sat(pos(e.cur) + gain);
+    e.earned = sat(pos(e.earned) + gain);
     return gain;
   }
-  // produce over the wall interval [from, to] clipped to the event window; returns currency gained
-  function produceWall(e, from, to) {
+  // produce over the wall interval [from, to] clipped to the event window; returns currency gained.
+  // `rush` = seconds of that interval (from its start) in which the brood works x C.rushMult
+  function produceWall(e, from, to, rush) {
     if (!e.id || e.over) return 0;
     var a = Math.max(from, e.start), b = Math.min(to, e.end);
-    return b > a ? produce(e, (b - a) / 1000) : 0;
+    if (!(b > a)) return 0;
+    var sec = (b - a) / 1000, fast = Math.min(sec, pos(rush));
+    return produce(e, sec + fast * (Math.max(1, fin(C.rushMult, 1)) - 1));
   }
-  function rate(s) { var e = ev(s); return e ? pos(e.units[0]) * CHAIN[0].rate : 0; }      // currency / s
-  function unitRate(s, k) {   // tier k-1 units (or currency for k = 0) per second from tier k
+  function rushing(s) { var e = ev(s); return !!e && pos(e.rush) > 0 && running(s); }
+  function speed(s) { return rushing(s) ? Math.max(1, fin(C.rushMult, 1)) : 1; }
+  function rate(s) { var e = ev(s); return e ? sat(pos(e.units[0]) * CHAIN[0].rate) : 0; }      // currency / s
+  function unitRate(s, k) {   // tier k-1 units (or currency for k = 0) per second from all of tier k
     var e = ev(s);
-    if (!e || k < 0 || k > 3) return 0;
-    return pos(e.units[k]) * CHAIN[k].rate;
+    if (!e || !tierOk(k)) return 0;
+    return sat(pos(e.units[k]) * CHAIN[k].rate);
   }
-  function perCoin(s) { return C.coinBase + C.coinRate * rate(s); }
+  function unitEach(s, k) { return tierOk(k) ? CHAIN[k].rate : 0; }   // ... from one unit (normal speed)
+  function perCoin(s) { return sat(C.coinBase + C.coinRate * rate(s)); }
 
   var autoAcc = 0;
+  // the UI says when the lair sheet is open (module state, never saved): the rush then drains at C.rushSheetDrain
+  var sheetOpen = false;
+  function clamp01(x) { x = fin(x, 1); return x < 0 ? 0 : (x > 1 ? 1 : x); }
   // swiped coins (the engine's 'coin' event carries the state) add currency at once while a lair is open
   E.on('coin', function (n, s) {
     n = pos(n);
     if (!(n > 0) || n >= 1e9 || !s) return;
     var e = ev(s);
     if (!e || !(e.firstStart > 0) || !running(s)) return;
-    var add = cl(n * perCoin(s));
-    e.cur = cl(pos(e.cur) + add); e.earned = cl(pos(e.earned) + add);
-    e.fromCoins = cl(pos(e.fromCoins) + add);
-    e.coins = cl(pos(e.coins) + n);
+    var add = sat(n * perCoin(s));
+    e.cur = sat(pos(e.cur) + add); e.earned = sat(pos(e.earned) + add);
+    e.fromCoins = sat(pos(e.fromCoins) + add);
+    e.coins = sat(pos(e.coins) + n);
+    // swiping rouses the brood (see the tick hook); coins an automation pays (Restless Wings' auto-gust runs inside
+    // E.automated) still add currency, but only the player's own swipes start or refresh the rush
+    if (!E.inAuto()) e.rush = C.rushSec;
   });
 
   E.addTickHook('events', function (s, dt, isOffline) {
@@ -346,14 +369,16 @@
       var to = Math.min(t, from + dt * 1000);
       var g = produceWall(e, from, to);
       e.at = Math.floor(to);
-      e.offGain = cl(pos(e.offGain) + g);
+      e.offGain = sat(pos(e.offGain) + g);
+      e.rush = 0; // nobody swipes while away
       return;
     }
     sync(s, t);
     e = ev(s);
     if (!e.id || e.over) { e.at = Math.floor(t); return; }
     var lastAt = e.at > 0 ? Math.min(e.at, t) : t;
-    produceWall(e, Math.max(lastAt, t - dt * 1000), t);
+    produceWall(e, Math.max(lastAt, t - dt * 1000), t, pos(e.rush));
+    e.rush = Math.max(0, pos(e.rush) - fin(dt, 0) * (sheetOpen ? clamp01(C.rushSheetDrain) : 1));
     e.at = Math.floor(t);
     autoAcc += dt;
     if (autoAcc >= C.autoEvery) { autoAcc = 0; automate(s); }
@@ -425,8 +450,8 @@
     var cost = seriesCost(k, e.bought[k], n);
     if (!(cost < MAXN) || pos(e.cur) + 1e-9 < cost) return false;
     e.cur = pos(e.cur - cost);
-    e.units[k] = cl(pos(e.units[k]) + n);
-    e.bought[k] = cl(pos(e.bought[k]) + n);
+    e.units[k] = sat(pos(e.units[k]) + n);
+    e.bought[k] = sat(pos(e.bought[k]) + n);
     // no 'event' emit per buy: the playtest log records every 'event', and hold-to-buy repeats fast
     if (e.bought[k] === n) E.emit('event', { type: 'firstBuy', lair: e.lair, k: k }, s);
     return true;
@@ -531,7 +556,9 @@
     active: function (s) { return running(s); },
     lair: lairDef,
     lairById: function (id) { return LIDX.hasOwnProperty(id) ? LAIRS[LIDX[id]] : null; },
-    rate: rate, unitRate: unitRate, perCoin: perCoin,
+    rushing: rushing, speed: speed,
+    setSheetOpen: function (on) { sheetOpen = !!on; },
+    rate: rate, unitRate: unitRate, unitEach: unitEach, perCoin: perCoin,
     unitPrice: unitPrice, unitCost: unitCost, unitMax: unitMax, buyUnit: buyUnit,
     questInfo: questInfo, claimQuest: function (s) { return claimQuest(s, false); },
     openChest: function (s) { return openChest(s, false); },

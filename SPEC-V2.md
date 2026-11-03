@@ -199,7 +199,7 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
   - Frozen Peak: currency Frost Shards; Snow Kobolds → Ice Trolls → Frost Wyverns → Glacier Wyrm.
   - Sunken Ship: currency Pearls; Crab Divers → Sea Serpents → Kraken Mates → Abyssal Wyrm.
 - Event production continues offline (tick hook, only within the event window). Event state resets when a new lair starts; cards stay.
-- Swiping in the cave during an event adds a small amount of event currency per coin (so active play matters).
+- Swiping in the cave during an event adds a small amount of event currency per coin and starts a **swipe rush**: the whole lair brood works ×25 as fast until 20 s after the last swiped coin (live play only; offline production runs at normal speed). Only the player's own swipes start it (coins from Restless Wings' auto-gust do not), and while the lair sheet is open it runs down 4× slower, so a shopping trip keeps it. An active player finishes the quest line in a few hours; a casual 4 × 5 min/day player in about two days.
 - Completing the whole quest line in 72h should be achievable with ~3–5 short check-ins per day.
 - UI: top-bar chip "Volcano Lair · 2d 14h" (or "Next lair in 6h") → opens a full-height sheet with the lair view (chain, quests, cards). Also a banner at the top of the Quests tab. Lair sheet tinted with its theme color (volcano ember-orange, frost pale-blue, sea teal) derived from tokens.
 - `state.events` subtree via `addStateDefaults`. Never use `Math.random` for schedule; use dates.

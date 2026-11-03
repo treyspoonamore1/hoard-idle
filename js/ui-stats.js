@@ -106,7 +106,7 @@
     var ex = [];
     var d = function (v, def) { return Math.abs(fin(v, def) - def) > 1e-9; };
     if (d(M.strokeMult, 1)) ex.push('Strokes ×' + mult(M.strokeMult));
-    if (d(M.coinGpsPct, 0)) ex.push('Coins +' + (Math.round(fin(M.coinGpsPct, 0) * 1000) / 10) + '% of gold/s');
+    if (d(M.coinGpsPct, 0)) ex.push('Coins +' + (Math.round(fin(M.coinGpsPct, 0) * 1000) / 10) + '% of gold/s (the Nest bonus counts half)');
     if (d(M.legendGainMult, 1)) ex.push('Legend gain ×' + mult(M.legendGainMult));
     if (d(M.costMultBuilding, 1)) ex.push('Building cost ×' + mult(M.costMultBuilding));
     if (d(M.costMultTier, 1)) ex.push('Minion cost ×' + mult(M.costMultTier));
@@ -162,8 +162,16 @@
       var ia = ORDER.indexOf(a.id), ib = ORDER.indexOf(b.id);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
+    // Nest bonus (feel pass): the brood multiplies building gold/s; not a mod source, so it gets its own row.
+    // Coins get C.broodCoin of it on their gold/s part only (shown as a note, the coin column stays x1)
+    var nest = fin(st.broodMult, 1), bc = Math.max(0, Math.min(1, fin(D.C && D.C.broodCoin, 0)));
+    var nx = nest > 1 + 1e-9 ? ['Nest of ' + (HOARD.fmt ? HOARD.fmt(fin(st.nestSize, 0)) : fin(st.nestSize, 0)) + ' Eggs'] : [];
+    if (nx.length && bc > 0) nx.push('Coins: ×' + mult(Math.pow(nest, bc)) + ' on their gold/s part');
+    rows.push({ id: 'nest', label: 'Nest bonus', gold: nest, coin: 1, minion: 1, all: 1, goldText: '×' + mult(nest), coinText: '×1', minionText: '×1',
+      extra: nx, neutral: !(nest > 1 + 1e-9) });
     res.rows = rows;
     res.total = summarize('total', st.M, W);
+    res.total.gold *= nest; res.total.goldText = '×' + mult(res.total.gold);
     res.total.label = 'Total';
     if (st.frenzyActive) res.effects.push({ id: 'frenzy', label: 'Gold Frenzy', text: 'gold/s ×' + mult(fin(D.C && D.C.frenzyMult, 7) * fin(st.M.frenzyMult, 1)) + ', ' + fmtTime(st.frenzyLeft) + ' left' });
     if (st.emberActive) res.effects.push({ id: 'ember', label: 'Ember Touch', text: 'coins and strokes ×' + mult(fin(D.C && D.C.emberMult, 10)) + ', ' + fmtTime(st.emberLeft) + ' left' });

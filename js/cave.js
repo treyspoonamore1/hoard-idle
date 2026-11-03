@@ -844,7 +844,11 @@
     if (n < floorN) { sv += floorN - n; n = floorN; }
     if (n > 0) {
       var gm = st.gustWorthMult > 0 ? st.gustWorthMult : 3;
-      var g = eNum('coinCollected', n, streakMult(), (sv / n) * gm); // gust mult rides valueMult so the engine's streak cap can't clip it
+      // the gust's x3 lands on at most gustBonusCoins coins (their average worth); the rest are swept up at normal worth,
+      // so a screen left full for the gust never pays more than swiping over the coins as they fall
+      var nb = (HOARD.data && HOARD.data.C && HOARD.data.C.gustBonusCoins) || n;
+      var vm = (sv / n) * (1 + (gm - 1) * Math.min(n, nb) / n);
+      var g = eNum('coinCollected', n, streakMult(), vm); // gust mult rides valueMult so the engine's streak cap can't clip it
       if (g > 0) spawnFloat(W * 0.5, peakY() - 70 * dk, g, true);
     }
     var lines = rm ? 6 : 18;
