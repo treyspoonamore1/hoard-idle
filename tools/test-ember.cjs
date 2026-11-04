@@ -21,11 +21,11 @@ function load(files) {
   for (const f of files) vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sb, { filename: f });
   return sb.HOARD;
 }
-const H = load(['js/data.js', 'js/engine.js', 'js/ember.js']);
+const H = load(['js/data.js', 'js/engine.js', 'js/ember.js', 'js/sky.js']);
 const E = H.engine, X = H.ember;
 check(!!X, 'HOARD.ember exists');
 // the UI module must load harmlessly in Node too
-try { load(['js/data.js', 'js/engine.js', 'js/ember.js', 'js/ui.js', 'js/ui-ember.js']); passes++; } catch (e) { fails++; console.log('FAIL: ui-ember.js throws in Node', e); }
+try { load(['js/data.js', 'js/engine.js', 'js/ember.js', 'js/sky.js', 'js/ui.js', 'js/ui-ember.js', 'js/ui-sky.js']); passes++; } catch (e) { fails++; console.log('FAIL: ui-ember.js throws in Node', e); }
 const plain = load(['js/data.js', 'js/engine.js']); // reference engine without Ember
 const events = [];
 E.on('ember', x => events.push(x));

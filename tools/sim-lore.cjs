@@ -8,6 +8,11 @@
 //        buys kilns / Fire Breaths (as tools/test-ember.cjs) and plays the event lair (as tools/test-events.cjs) on a
 //        simulated wall clock (HOARD.events._now = sim time), so event cards feed the main game
 //        NOEVENTS=1 with EMBER=1: Ember only (isolates the event cards' effect on pacing)
+//        STARFALL=1 with EMBER=1: the player also runs a Starfall (js/sky.js) whenever one is ready while swiping:
+//                 80% of the stars caught for Stardust; as in the game, stars pay no gold and the coin spill keeps
+//                 running (normal swiping not reduced), so gold pacing must match the run without STARFALL exactly
+//                 SFCOINS=n what-if: pay n coins per caught star (E.coinCollected(s, n, 3, 1)); the game pays 0
+//                 SFSPILL=1 what-if: pause the coin spill during a Starfall (an earlier design)
 //        CURVE=1  instead of profiles: for Legend L = 10..1e12 (lore bought with L points, fresh run) print the minutes of
 //                 active play until a Long Sleep gives +50% / +100% of L (shows whether runs shrink as Legend grows)
 //        SNAP=dir writes the state right after Sleeps 1,2,3,5,8,12,16,20,30,40,60,80,100 to dir/<profile>-s<n>.json
@@ -17,6 +22,7 @@
 //        OFFPROBE=file.json[,...] [OFFH=8]: from a saved state, compare E.offline(OFFH h) against OFFH h of live idle ticks
 //                 (app open, no swiping; automation runs in both), with Dream Keeper off / at 100% / at 25%
 //        AUTOSLEEP=pct  owns-Dream-Keeper players switch it on at pct% (offline auto-sleeps are counted)
+//        DKONLY=1 with AUTOSLEEP: once Dream Keeper is on the sim player never Sleeps itself (Dream Keeper decides alone)
 //        QUIET=1 only the summary              TWEAK="..." eval'd after load (e.g. "HOARD.lore.node('greed').base=2")
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
@@ -24,13 +30,17 @@ const root = path.join(__dirname, '..');
 let seed = +process.env.SEED || 777;
 Math.random = function () { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 const files = ['js/data.js', 'js/engine.js', 'js/lore.js'];
-if (process.env.EMBER) { if (!process.env.NOEVENTS) files.push('js/events.js'); files.push('js/ember.js'); }
+if (process.env.EMBER) { if (!process.env.NOEVENTS) files.push('js/events.js'); files.push('js/ember.js', 'js/sky.js'); }
 for (const f of files) vm.runInThisContext(fs.readFileSync(path.join(root, f), 'utf8'), { filename: f });
-const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.ember, EV = H.events;
+const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.ember, EV = H.events, SKY = H.sky;
 const QB = require('./quest-balance.cjs')(E, D);
 const WALL0 = Date.UTC(2026, 10, 3, 8, 0, 0);
 let simT = 0;
 if (EV) EV._now = () => WALL0 + simT * 1000;
+const STARFALL = !!(process.env.STARFALL && SKY);
+if (STARFALL) SKY._now = () => WALL0 + simT * 1000;
+const SFCOINS = process.env.SFCOINS !== undefined ? +process.env.SFCOINS : 0; // what-if coins per caught star (the game: 0)
+const SFSPILL = !!process.env.SFSPILL; // what-if: no coin spill while stars fall (the game keeps the spill)
 if (process.env.TWEAK) eval(process.env.TWEAK);
 const HOURS = +process.argv[2] || 6;
 const ONLY = process.argv[3] || 'moderate';
@@ -232,23 +242,45 @@ function playEvents(s, R) {
   for (let k = 3; k >= 0; k--) { if (q && q.kind === 'own' && k < q.k && s.events.units[q.k] < q.n) continue; EV.buyUnit(s, k, 'max'); }
 }
 const AUTOSLEEP = process.env.AUTOSLEEP ? +process.env.AUTOSLEEP : 0;
+const DKONLY = !!process.env.DKONLY; // with AUTOSLEEP: once Dream Keeper is on, the sim player leaves every Sleep to it
+// every Long Sleep (the sim player's and Dream Keeper's) is logged: { t, run, gain, before, dk, off, sinceAsc }
+let curR = null, inOffline = false;
+const engineSleep = E.sleep;
+E.sleep = function (s) {
+  const before = s.legend, g = engineSleep.apply(this, arguments);
+  if (g > 0 && curR) {
+    curR.all.push({ t: simT, run: simT - curR.lastSleepT, gain: g, before, dk: E.inAuto(), off: inOffline, sinceAsc: simT - curR.lastAscT });
+    curR.lastSleepT = simT;
+  }
+  return g;
+};
+function dkDigest(R) {
+  const dk = R.all.filter(x => x.dk), on = dk.filter(x => !x.off), b = on.map(x => x.run).sort((p, q) => p - q);
+  const tiny = on.filter(x => x.run < 60).length, afterAsc = R.ascAt.map(a => { const x = R.all.find(y => y.t >= a); return x ? mm(x.t - a) + (x.dk ? 'dk' : '') : '-'; });
+  return 'sleeps ' + R.all.length + ' (DK ' + dk.length + ', DK away ' + dk.filter(x => x.off).length + ') | DK runs <60s ' + tiny + ', median DK run ' + (b.length ? mm(b[Math.floor(b.length / 2)]) : '-') +
+    ' | first Sleep after each Ascend +' + (afterAsc.join(',') || '-') + ' | Legend 1h after Ascend 1 ' + (R.post1h != null ? f(R.post1h) : '-');
+}
 
 // ---------------------------------------------------------------- one profile
 function run(prof) {
   const s = E.newState();
   s.auto.master = true;
-  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {}, evClaims: [], off: [], warm: {}, wake: null };
+  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {}, evClaims: [], off: [], warm: {}, wake: null, all: [], lastSleepT: 0, lastAscT: 0, ascAt: [], post1h: null };
+  curR = R;
   const dt = 0.5, end = HOURS * 3600;
   let pool = 0, poolV = 0, nextTr = 70 + Math.random() * 60, runStart = 0, gustWait = 0, availAt = null;
   let bought = [];
+  let sf = null; R.sf = 0; // Starfall in progress (STARFALL=1)
   while (R.T < end) {
+    if (sf && !prof.open(R.T)) { SKY.abort(s); sf = null; }
     if (!prof.open(R.T)) { // closed app: jump to the next open moment, offline() once
       let T2 = R.T; while (T2 < end && !prof.open(T2)) T2 += 1;
       const gap = T2 - R.T;
       if (gap > 0) {
         const st0 = E.stats(s), sl0 = s.sleeps, er0 = s.earnedRun, L0 = s.legend;
-        simT = T2;
+        simT = T2; inOffline = true;
         const res = E.offline(s, gap);
+        inOffline = false;
         R.off.push({ t: T2, sec: res.seconds, gold: res.gold, gps0: st0.baseGps, gps1: E.stats(s).baseGps, sleeps: s.sleeps - sl0, legend0: L0, legend1: s.legend, er0 });
         R.T = T2; pool = 0; poolV = 0;
         scan(s, 'state', prof.name + '@offline' + T2);
@@ -261,8 +293,23 @@ function run(prof) {
     s._caveActive = true;
     E.tick(s, dt);
     const st = E.stats(s);
-    pool += st.spillRate * dt; poolV += st.spillRate * dt;
+    if (!(sf && SFSPILL)) { pool += st.spillRate * dt; poolV += st.spillRate * dt; } // SFSPILL: the cave pauses the spill during a Starfall
     if (pool > C.maxCoins) pool = C.maxCoins;
+    if (STARFALL) { // a Starfall: 80% of the stars caught, spread evenly over its duration; the spill keeps running (as in the game)
+      if (!sf && swiping && SKY.charges(s) >= 1) {
+        const p = SKY.start(s);
+        if (p) { const total = Math.round(p.dur * p.rate * (1 + p.twinP)); sf = { p, t: 0, total, caught: Math.round(0.8 * total), paid: 0 }; }
+      }
+      if (sf) {
+        sf.t += dt;
+        const due = Math.min(sf.caught, Math.floor(sf.caught * Math.min(1, sf.t / sf.p.dur) + 1e-9));
+        if (due > sf.paid) { if (SFCOINS > 0) E.coinCollected(s, SFCOINS * (due - sf.paid), 3, 1); sf.paid = due; }
+        if (sf.t >= sf.p.dur) {
+          SKY.finish(s, { total: sf.total, caught: sf.caught, best: 12, base: sf.caught * 2, twins: 0, rides: sf.p.comets ? 1 : 0, cuts: 0 });
+          sf = null; R.sf++;
+        }
+      }
+    }
     if (swiping) {
       const take = Math.min(pool, 4 * dt);
       if (take > 0) { const avg = poolV / pool; E.coinCollected(s, take, 3, avg); poolV -= take * avg; pool -= take; }
@@ -307,12 +354,15 @@ function run(prof) {
       if (L.canAscend(s) && (mg >= 2 || R.T - availAt >= 600)) {
         R.myths.push({ t: R.T, gained: mg, legend: s.legend, sinceAvail: R.T - availAt });
         R.loreAt.push({ t: R.T, what: 'ASCEND +' + mg + ' Myth', bought: bought }); bought = [];
+        if (sf) { SKY.abort(s); sf = null; }
         L.ascend(s); availAt = null; runStart = R.T; pool = 0; poolV = 0;
+        R.lastSleepT = R.lastAscT = R.T; R.ascAt.push(R.T);
         buyLore(s, bought);
         continue;
       }
       const gain = E.legendOnSleep(s);
-      if (E.canSleep(s) && gain >= Math.max(3, SLEEPPCT / 100 * s.legend) && R.T - runStart >= MINRUN) {
+      const dkOnly = DKONLY && L.autoSleepOn(s);
+      if (!dkOnly && E.canSleep(s) && gain >= Math.max(3, SLEEPPCT / 100 * s.legend) && R.T - runStart >= MINRUN) {
         const rec = { t: R.T, run: R.T - runStart, gain, before: s.legend, rank: s.rank, pts: 0, bought: [] };
         R.loreAt.push({ t: R.T, what: 'pre-sleep', bought: bought }); bought = [];
         E.sleep(s); runStart = R.T; pool = 0; poolV = 0;
@@ -332,6 +382,7 @@ function run(prof) {
       if (R.T - runStart < 1) R.dbgStarted = (R.dbgStarted || 0) + 1;
       if (R.dbgStarted >= 2) R.dbgDone = true;
     }
+    if (R.post1h == null && R.ascAt.length && R.T - R.ascAt[0] >= 3600) R.post1h = s.legend;
     if (isInt(R.T / 1800)) {
       const g1 = E.stats(s);
       R.rows.push({ h: (R.T / 3600).toFixed(1), gold: f(s.gold), gps: f(g1.baseGps), rank: s.rank, legend: f(s.legend), pts: f(s.legendPts), myth: s.myth, sleeps: s.sleeps,
@@ -361,7 +412,7 @@ function report(R) {
     const gaps = R.sleeps.slice(0, 10).map(x => (x.run / 60).toFixed(0)).join(',');
     console.log((process.env.LABEL || '') + ' | S1 ' + mm(R.sleeps[0] && R.sleeps[0].t) + ' runs ' + gaps + ' | mythAvail ' + (R.mythAvail.map(hm).join(',') || 'never') +
       ' | L100/1K/10K ' + [100, 1000, 10000].map(k => hm(R.lt[k])).join('/') + ' | asc ' + R.myths.map(m => hm(m.t) + '+' + m.gained).join(',') + ' | L ' + f(s.legend) + ' myth ' + s.myth + ' sleeps ' + s.sleeps + (R.stopped ? ' | ' + R.stopped : '') +
-      ' | empty ' + R.sleeps.filter(x => !x.bought.length).length);
+      ' | empty ' + R.sleeps.filter(x => !x.bought.length).length + (AUTOSLEEP ? ' | ' + dkDigest(R) : ''));
     return;
   }
   console.log('\n================ ' + R.name + ' (' + HOURS + ' h) ================');
@@ -381,6 +432,7 @@ function report(R) {
     ' | runs at the ' + MINRUN + 's floor: ' + floor + '/' + R.sleeps.length + ' | first at floor: Sleep ' + (R.sleeps.findIndex(x => x.run <= MINRUN + 1) + 1));
   console.log('first choices: ' + R.sleeps.slice(0, 3).map((x, i) => 'S' + (i + 1) + '[' + (x.bought.join(' ') || '-') + ']').join(' ') +
     ' | first automation at Sleep ' + (R.sleeps.findIndex(x => x.bought.some(b => /^auto_/.test(b))) + 1));
+  if (STARFALL) console.log('Starfall: ' + R.sf + ' Starfalls, stage ' + (SKY.stage(s) + 1) + ' ' + SKY.stageName(s) + ', Stardust ' + Math.round(s.sky.xp) + ', lanterns ' + s.sky.lant + ', best catch ' + s.sky.bestPct + '%');
   if (X) console.log('Ember: woke at ' + hm(R.wake) + ', warmth +10m x' + (R.warm[600] || 0).toFixed(2) + ', +1h x' + (R.warm[3600] || 0).toFixed(2) + ', +3h x' + (R.warm[10800] || 0).toFixed(2) + ', final x' + X.warmth(s).toFixed(2));
   if (EV) console.log('Event: quests claimed at (h) ' + (R.evClaims.map(t => (t / 3600).toFixed(1)).join(' ') || '-') + ' | step ' + (s.events ? s.events.q : '-') + '/10');
   if (R.off.length) {
@@ -389,6 +441,7 @@ function report(R) {
     console.log('offline: ' + R.off.length + ' returns, gold/s while away up to x' + mx.toFixed(1) + ' of the gold/s at leaving (automation keeps buying), ' + offS + ' Dream Keeper sleeps while away' +
       (offS ? ', biggest Legend jump away x' + R.off.reduce((a, o) => Math.max(a, o.legend0 > 0 ? o.legend1 / o.legend0 : 1), 1).toFixed(1) : ''));
   }
+  if (AUTOSLEEP) console.log('Dream Keeper: ' + dkDigest(R));
   console.log('Myth available at: ' + (R.mythAvail.map(hm).join(', ') || 'never'));
   R.qbFails = QB.report(R, [['run 1', 1, 1], ['runs 2-5', 2, 5], ['runs 6+', 6, 1e9]]);
   R.myths.forEach((m, i) => console.log('Ascend ' + (i + 1) + ' at ' + hm(m.t) + ' (+' + m.gained + ' Myth, Legend ' + f(m.legend) + ', waited ' + mm(m.sinceAvail) + ')'));

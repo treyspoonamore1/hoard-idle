@@ -20,11 +20,11 @@ function load(files) {
   for (const f of files) vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sb, { filename: f });
   return sb.HOARD;
 }
-const mods = ['js/lore.js', 'js/events.js', 'js/ember.js'].filter(f => fs.existsSync(path.join(root, f)));
+const mods = ['js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'].filter(f => fs.existsSync(path.join(root, f)));
 const FILES = ['js/data.js', 'js/engine.js'].concat(mods, ['js/sound.js', 'js/ui-stats.js']);
 let H;
 try { H = load(FILES); passes++; } catch (e) { console.log('FAIL: modules throw in Node', e); process.exit(1); }
-try { load(FILES.concat(['js/ui.js'])); passes++; } catch (e) { fails++; console.log('FAIL: with ui.js in Node', e); }
+try { load(FILES.concat(['js/ui.js', 'js/ui-sky.js'])); passes++; } catch (e) { fails++; console.log('FAIL: with ui.js in Node', e); }
 const E = H.engine, SND = H.sound, SV = H.statsView;
 check(!!SND && typeof SND.play === 'function', 'HOARD.sound exists');
 check(!!SV && typeof SV.lifetime === 'function' && typeof SV.multipliers === 'function', 'HOARD.statsView exists');

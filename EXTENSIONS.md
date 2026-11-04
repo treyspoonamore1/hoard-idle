@@ -15,10 +15,10 @@ no emoji; no alert/confirm/prompt (use `HOARD.ui.ask`); never NaN/Infinity in st
 
 ```
 js/data.js  js/engine.js                         foundation (engine core + extension points)
-js/lore.js  js/events.js  js/ember.js            engine-side feature modules — Node-safe, no DOM, no window
+js/lore.js  js/events.js  js/ember.js  js/sky.js engine-side feature modules — Node-safe, no DOM, no window
 js/log.js   js/sound.js                          browser modules (guard DOM/Audio), loaded BEFORE cave/ui
 js/cave.js  js/ui.js                             foundation (canvas scene / UI core)
-js/ui-lore.js  js/ui-events.js  js/ui-ember.js  js/ui-stats.js     UI feature modules (loaded AFTER ui.js)
+js/ui-lore.js  js/ui-events.js  js/ui-ember.js  js/ui-stats.js  js/ui-sky.js     UI feature modules (loaded AFTER ui.js)
 js/main.js                                       foundation (boot, loop, saves, log wiring)
 ```
 
@@ -183,8 +183,13 @@ e.g. `x.M.allMult * x.M.gpsMult` per source.
 Runs inside `tick()` after production and the time advance (and after Frenzy/Ember expiry), before the
 mission done-flags update. Also runs once per `offline()` sub-step with `isOffline = true`.
 
-- Live: `dt` ≤ 1 s, about 60 calls/s. Offline: up to 200 sub-steps, so `dt` can be as large as
+- Live: `dt` ≤ 1 s, about 60 calls/s. Offline: 200 sub-steps, so `dt` can be as large as
   8h/200 = 144 s (more with a bigger offline cap). Integrate with `dt`; do not assume small steps.
+- `E.addOfflineStepHook(name, fn(state) -> seconds | 0)`: a module that needs finer offline steps names the longest
+  sub-step it can live with; `offline()` then uses `max(200, ceil(seconds / wish))` sub-steps, at most
+  `C.offlineStepsMax` (960). Lore automation asks for 30 s while any automation is on (an 8 h night: 960 steps of
+  30 s instead of 200 of 144 s, ~0.5 s of catch-up), so Dream Keeper's Legend no longer swings with the hours away.
+  Absences under 100 min and saves without automation keep the 200 steps.
 - Engine events are **suppressed while offline** (`E.isQuiet()` is true), so nothing you emit there shows up.
 - Throttle heavy work, e.g. accumulate `dt` and run auto-buy every 0.5 s live.
 - `state.time` advances only in `tick()`, not offline. For wall-clock schedules (EVENTS) use `Date.now()`
@@ -462,12 +467,18 @@ HOARD.ui.addRowExtra('building', function (slot, id) {
 ```js
 ui.sheet(node, { center, dismissable /*default true*/, full /*92% height*/, cls /*extra class on .sheet*/,
                  onClose /*dismissed or closed normally*/, onAbort /*replaced by another sheet*/,
-                 patch /*(state, stats) <= 5x/s while open*/ })
+                 patch /*(state, stats) <= 5x/s while open*/, guardMs /*backdrop ignores presses this long*/ })
 ui.closeSheet(); ui.sheetOpen() -> bool
 ui.ask(title, text, yesLabel, noLabel[, { danger, dismissable }]) -> Promise<boolean>  // false on No/dismiss/replaced
 ui.confirm(title, text, yes, no, danger) -> Promise<boolean>
 ui.toast(title, text, kind)       // kind: '' | 'gold' | 'moss' (success) | 'ember' (warning). Max 2 visible, queued.
+ui.holdToasts(fn(t {title, text, kind}) -> bool | null)   // true keeps that toast queued (a Starfall holds all but 'sky')
+ui.addWelcomeLine(fn(state, offlineResult) -> string | { text, cls } | null)   // a line on the "While you slept" sheet
 ```
+
+A backdrop press only dismisses a sheet when it started on the backdrop after the sheet opened (a swipe that ends
+where a sheet just appeared never closes it). Welcome lines run once, synchronously right after `offline()`: read and
+clear your transient away notes there (Dream Keeper: `s._dkAway`; the sky: `HOARD.sky.takeAway`, `takeEmber`).
 
 Only one sheet at a time: opening a sheet replaces the current one. Lair sheet (EVENTS):
 `ui.sheet(node, { full: true, cls: 'lair-volcano', patch: patchFn })`, tinted with your CSS.
@@ -528,6 +539,11 @@ HOARD.cave.anchor(name) -> { x, y, cx, cy }
 HOARD.cave.metrics() -> { w, h, dpr, unit, dk, baseY, peakY, pileW, pileH, coinR, reducedMotion, inited }
 HOARD.cave.float(x, y, text, big?, color?)    // floating label like the "+1.2K" numbers
 HOARD.cave.burst(x, y, n, 'star'|'spark')     // particle burst (pooled, capped)
+// Starfall hooks (js/ui-sky.js uses them; any module may)
+HOARD.cave.addSwipeHook(fn(px, py, x, y, t, strokeSeq)) / removeSwipeHook(fn)
+HOARD.cave.setHudDim(a)         /  hudDim()            // a clamped to 0.2..1
+HOARD.cave.setDragonScale(k)    /  dragonScale()       // k clamped to 1..1.25
+HOARD.cave.setDragonDecor(fn(g, part, clock, reducedMotion) | null)
 ```
 
 - **Layers**: `ctx` is already scaled to CSS px (0..w, 0..h) and includes screen shake. `t` = cave clock
@@ -545,6 +561,48 @@ HOARD.cave.burst(x, y, n, 'star'|'spark')     // particle burst (pooled, capped)
   (left/right floor nooks clear of the pile), `'streak'` (streak meter), `'finger'` (current touch, else
   center), `'gustBtn'` (Gust button center). `x,y` are canvas-local CSS px. `cx,cy` are viewport coordinates.
 - The cave stays v1 for swiping: never add tap targets to the canvas.
+- **Swipe hooks**: `fn(px, py, x, y, t, strokeSeq)` runs for every swipe segment (previous point -> new point, canvas
+  CSS px, `t` = event ms) in `processPoint`, after the coins and the treasure. Moves under 0.5 px never reach it, so
+  a press without movement never catches anything. `strokeSeq` goes up by one at each finger-down (a twin caught
+  "in one stroke" = same `strokeSeq`). Each call is in try/catch; a hook that throws 5 times is dropped. No-ops in
+  Node.
+- **`setHudDim(a)`** fades the streak meter in the top-left corner (alpha × a); other top-of-cave HUD layers read
+  `hudDim()` (the event lair's rush pill does). A Starfall dims it to 0.3 so the stars entering at the top stay
+  visible, and always restores 1 (finish, abort). The normal coin spill is never paused: a Starfall is gold-neutral
+  because stars pay no gold, not because the spill stops.
+- **`setDragonScale(k)`** grows the dragon (1..1.25): it is drawn at `dk·k`, and `anchor('dragon')`, the coin keep-out
+  zone, the eye's look target and the smoke puffs follow. At 360×780 the head at 1.25 stays below two one-line toasts
+  (two two-line toasts can brush the horn tips; toasts are transient).
+- **`setDragonDecor(fn)`** draws inside the dragon's own transform (dragon units, origin at its feet), so decorations
+  follow its hop, breathing and head turn. `part`: `'wing'` (folded-wing frame, after the wing), `'belly'` (after the
+  belly), `'headBack'` (head frame, before the horns), `'head'` (head frame, on top). Wrapped in save/restore and
+  try/catch (off after 5 throws). One decorator at a time (Starfall's growth uses it).
+
+---
+
+## 4b. Starfall (`HOARD.sky`, js/sky.js; UI in js/ui-sky.js)
+
+Engine-side, Node-safe, no `Math.random`, **no mod source, no cards, never `E.earn`**. Owns `state.sky`:
+`{ on, xp, ch, at, n, caught, stars, best, bestPct, capAt, eCaught, lant, lit, gift }` (see SPEC-V2 "Starfall").
+The stage is derived from `xp` (Stardust, never spent). A running Starfall lives in `s._skyRun` (never saved).
+
+```js
+HOARD.sky.on(s) / stage(s) / stageName(s, i?) / STAGES / params(s) / maxStars(p) / cap(s)
+HOARD.sky.charges(s) / chargesExact(s) / nextIn(s)        // readers project the charge clock to now
+HOARD.sky.progress(s) / xpToNext(s) / scales(s)           // growth bar; Star Scales past Ancient
+HOARD.sky.start(s) -> params | null                       // needs a whole charge; does NOT spend it
+HOARD.sky.finish(s, {total, caught, best, base, twins, rides, cuts}) -> {dust, mult, stageUp, stage, pct, ...} | null
+HOARD.sky.abort(s)                                        // nothing spent, nothing given
+HOARD.sky.accrue(s) / buyLantern(s) / lanternCost(s) / LANT_COST / takeEmber(s)
+HOARD.sky.takeAway(s) -> { stage, light, lightDust } | null   // stage-ups / First Light during the last offline(), once
+HOARD.sky._now = epochMs | fn                             // tests and sims fake the clock
+```
+
+Events: `E.emit('sky', { type: 'open'|'fall'|'stage'|'light'|'lantern'|'ember', ... })` (quiet offline: stage-ups
+and First Light there land in `s._skyAway` for `takeAway`). **A Starfall pays no gold**: caught stars give Stardust
+only, the normal coin spill keeps running, so the same swipes still sweep coins and gold pacing is untouched by design.
+Log events: `starfall_start`, `starfall`, `starfall_abort` (`why`: hidden | replaced | ascend | stall | error), `sky`,
+`skyopen`.
 
 ---
 
@@ -598,6 +656,7 @@ node --check js/*.js
 node tools/engine-selftest.cjs           # engine unit checks + pacing (SLEEP=1 for sleeps)
 node tools/sim.cjs [hours] [profiles]    # v1 balance sim (unchanged numbers in v2 foundation)
 node tools/save-compat.cjs               # v1 fixtures -> v2 (+ all engine-side modules), garbage/future saves
+node tools/test-sky.cjs                  # Starfall: live save, charges, finish clamps, First Light, Lanterns, no power
 node tools/gen-v1-fixtures.cjs           # regenerate tools/fixtures/v1-*.json from git main's v1 engine
 node tools/build-dev.cjs && NODE_PATH=/opt/node-tools/node_modules node tools/smoke.cjs   # phone smoke test (writes screenshots)
 ```

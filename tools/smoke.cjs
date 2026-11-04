@@ -24,11 +24,12 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   await page.reload();
   await page.waitForFunction(() => window.HOARD && window.HOARD.state && window.HOARD.state.time > 0.2);
 
-  const textOk = async (label) => {
-    const t = await page.evaluate(() => document.body.innerText);
+  const textOk = async (label, pg) => {
+    pg = pg || page;
+    const t = await pg.evaluate(() => document.body.innerText);
     const bad = t.match(/.{0,30}\b(NaN|undefined|Infinity|null)\b.{0,30}/);
     check(!bad, 'no NaN/undefined/Infinity text [' + label + ']' + (bad ? ' -> "' + bad[0] + '"' : ''));
-    const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, bw: document.body.scrollWidth, iw: innerWidth }));
+    const ov = await pg.evaluate(() => ({ sw: document.documentElement.scrollWidth, bw: document.body.scrollWidth, iw: innerWidth }));
     check(ov.sw <= ov.iw && ov.bw <= ov.iw, 'no horizontal overflow [' + label + '] ' + JSON.stringify(ov));
   };
 
@@ -380,6 +381,96 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     await page.screenshot({ path: SHOTS + '/smoke360-' + t + '.png' });
   }
   await page.setViewportSize({ width: 412, height: 915 });
+
+  // ================================================================ Starfall on the player's live save (412 and 360)
+  for (const [SW, SH] of [[412, 915], [360, 780]]) {
+    const tag = SW === 360 ? '-360' : '-412';
+    const raw = fs.readFileSync(path.join(__dirname, 'fixtures', 'v2-player-post-ascend.json'), 'utf8');
+    const sctx = await browser.newContext({ viewport: { width: SW, height: SH }, deviceScaleFactor: 2.6, hasTouch: true, isMobile: true });
+    const sp = await sctx.newPage();
+    const serr = [];
+    sp.on('console', m => { if (m.type() === 'error') serr.push('console: ' + m.text()); });
+    sp.on('pageerror', e => serr.push('pageerror: ' + (e.stack || e.message)));
+    await sctx.addInitScript((r) => {
+      try { if (!sessionStorage.getItem('__fx')) { localStorage.clear(); localStorage.setItem('hoard.save.v1', r); sessionStorage.setItem('__fx', '1'); } } catch (e) {}
+    }, raw);
+    await sp.goto(URL);
+    await sp.waitForFunction(() => window.HOARD && window.HOARD.state && window.HOARD.state.time > 0.3);
+    await sp.waitForTimeout(700);
+    await sp.evaluate(() => { if (HOARD.ui.sheetOpen()) HOARD.ui.closeSheet(); });
+    await sp.waitForTimeout(400);
+    const l0 = await sp.evaluate(() => {
+      const b = document.getElementById('skybtn'), g = document.getElementById('gust');
+      const r = b && b.getBoundingClientRect(), q = g.getBoundingClientRect();
+      return { vis: !!b && !b.hidden && r.width > 40, text: b ? b.innerText.replace(/\s+/g, ' ') : '', on: HOARD.state.sky.on, ch: HOARD.state.sky.ch, n: HOARD.state.sky.n,
+        overlapGust: !!r && !(r.bottom <= q.top || r.top >= q.bottom || r.right <= q.left || r.left >= q.right), right: r && r.right, iw: innerWidth };
+    });
+    check(l0.on && l0.vis && /Stars 2\/4/.test(l0.text) && !l0.overlapGust && l0.right <= l0.iw, 'Starfall' + tag + ': launcher visible "' + l0.text + '", clear of Gust ' + JSON.stringify(l0));
+    await textOk('sky launcher' + tag, sp);
+    await sp.locator('#skybtn').click();
+    await sp.waitForTimeout(200);
+    check(await sp.evaluate(() => HOARD.skyUI.running() && HOARD.cave.hudDim() < 0.5 && HOARD.state.sky.ch >= 1.99), 'Starfall' + tag + ': running, HUD dimmed, no charge spent yet');
+    // toasts other than the sky's wait for the end of the Starfall; the sky's own still show
+    await sp.evaluate(() => {
+      window.__tlog = [];
+      new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && n.classList.contains('toast')) window.__tlog.push({ run: HOARD.skyUI.running(), kind: n.className, txt: n.innerText }); })
+        .observe(document.getElementById('toasts'), { childList: true });
+      HOARD.ui.toast('Smoke held toast', 'waits for the Starfall', ''); HOARD.ui.toast('Smoke sky toast', 'shows now', 'sky');
+    });
+    await sp.waitForTimeout(150);
+    const tz = await sp.evaluate(() => [document.getElementById('toasts').innerText, Array.from(document.querySelectorAll('#toasts .toast')).every(n => /sky|gold/.test(n.className) || n.classList.contains('out'))]);
+    check(!/Smoke held toast/.test(tz[0]) && /Smoke sky toast/.test(tz[0]) && tz[1], 'Starfall' + tag + ': other toasts held (load toasts sent back to the queue), sky toasts shown (' + tz[0].replace(/\s+/g, ' ').slice(0, 120) + ')');
+    const coins0 = await sp.evaluate(() => HOARD.state.stat.coins);
+    // 25 s of touch swipes across the top half of the cave
+    const cb = await sp.locator('#cave').boundingBox();
+    const cdp = await sctx.newCDPSession(sp);
+    const touch = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+    const tS = Date.now(); let k = 0, shot = false;
+    while (Date.now() - tS < 25000) {
+      const y0 = cb.y + cb.height * (0.12 + 0.36 * ((k * 0.37) % 1)), dir = k % 2 ? -1 : 1;
+      const xa = dir > 0 ? cb.x + 12 : cb.x + cb.width - 12;
+      await touch('touchStart', xa, y0);
+      for (let i = 1; i <= 12; i++) { await touch('touchMove', xa + dir * i * (cb.width - 24) / 12, y0 + Math.sin(i / 2) * 18); await sp.waitForTimeout(14); }
+      await touch('touchEnd', 0, 0);
+      k++;
+      if (!shot && Date.now() - tS > 9000) { shot = true; await sp.screenshot({ path: SHOTS + '/sky-running' + tag + '.png' }); }
+    }
+    await sp.waitForFunction(() => !HOARD.skyUI.running() && document.getElementById('overlay').classList.contains('open'), null, { timeout: 15000 }).catch(() => {});
+    await sp.waitForTimeout(1400);
+    const r1 = await sp.evaluate(() => ({ n: HOARD.state.sky.n, ch: HOARD.state.sky.ch, xp: HOARD.state.sky.xp, caught: HOARD.state.sky.caught, dim: HOARD.cave.hudDim(),
+      sheet: document.getElementById('overlay').innerText, toasts: document.getElementById('toasts').innerText, swiped: HOARD.state.stat.coins }));
+    console.log('Starfall' + tag + ':', JSON.stringify(r1).slice(0, 300));
+    check(r1.n === 1 && r1.ch >= 0.99 && r1.ch < 1.1 && r1.dim === 1 && /Starfall/.test(r1.sheet) && /Caught/.test(r1.sheet) && /Stardust/.test(r1.sheet) && !/Gold/.test(r1.sheet) && r1.caught > 0 && r1.xp > 0,
+      'Starfall' + tag + ': score sheet (no gold row), n 1, one charge spent, HUD back (' + r1.caught + ' caught, +' + r1.xp + ' Stardust)');
+    check(r1.swiped > coins0, 'Starfall' + tag + ': the spill kept running, the same swipes swept coins during the Starfall (' + coins0 + ' -> ' + r1.swiped + ')');
+    await sp.waitForFunction(() => window.__tlog.some(t => !t.run && !/\bsky\b/.test(t.kind)), null, { timeout: 15000 }).catch(() => {});
+    const tl = await sp.evaluate(() => window.__tlog);
+    const during = tl.filter(t => t.run && !/\bsky\b/.test(t.kind) && !/^Your dragon grew/.test(t.txt));
+    check(during.length === 0 && tl.some(t => !t.run && !/\bsky\b/.test(t.kind)), 'Starfall' + tag + ': no other toast showed while stars fell (' + during.map(t => t.txt).join(' | ').slice(0, 160) + '), held ones show after (' + tl.length + ' toasts logged)');
+    await textOk('sky sheet' + tag, sp);
+    await sp.screenshot({ path: SHOTS + '/sky-sheet' + tag + '.png' });
+    await sp.evaluate(() => HOARD.ui.closeSheet());
+    await sp.locator('#tabs [data-tab="hoard"]').click(); await sp.waitForTimeout(500);
+    check(/Night Sky/.test(await sp.evaluate(() => document.getElementById('panel').innerText)), 'Starfall' + tag + ': Night Sky section in the Hoard tab');
+    await textOk('hoard sky' + tag, sp);
+    await sp.screenshot({ path: SHOTS + '/hoard-sky' + tag + '.png' });
+    await sp.locator('#tabs [data-tab="ember"]').click(); await sp.waitForTimeout(500);
+    await sp.evaluate(() => { const n = document.querySelector('[data-sec="ember.lanterns"]'); if (n) n.scrollIntoView({ block: 'center' }); });
+    await sp.waitForTimeout(300);
+    const e0 = await sp.evaluate(() => HOARD.state.ember.embers);
+    await sp.locator('[data-sec="ember.lanterns"] button.buy').click();
+    await sp.waitForTimeout(400);
+    check(await sp.evaluate((e) => HOARD.state.sky.lant === 1 && HOARD.state.ember.embers < e, e0), 'Starfall' + tag + ': a Sky Lantern bought with embers');
+    // holding the button is still one press: one level, never the whole row of lanterns
+    const lb = await sp.locator('[data-sec="ember.lanterns"] button.buy').boundingBox();
+    await sp.mouse.move(lb.x + lb.width / 2, lb.y + lb.height / 2); await sp.mouse.down(); await sp.waitForTimeout(1500); await sp.mouse.up();
+    await sp.waitForTimeout(300);
+    check(await sp.evaluate(() => HOARD.state.sky.lant === 2), 'Starfall' + tag + ': a 1.5 s hold on Light buys one level (Lv ' + (await sp.evaluate(() => HOARD.state.sky.lant)) + ')');
+    await textOk('ember lanterns' + tag, sp);
+    await sp.screenshot({ path: SHOTS + '/ember-lanterns' + tag + '.png' });
+    check(serr.length === 0, 'Starfall' + tag + ': no console/page errors' + (serr.length ? ':\n  ' + serr.join('\n  ') : ''));
+    await sctx.close();
+  }
 
   // ================================================================ v1 fixtures -> hoard.save.v1 -> load + reload
   const FIX = path.join(__dirname, 'fixtures');

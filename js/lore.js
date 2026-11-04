@@ -31,7 +31,7 @@
   var NODES = [
     // ---- Automation (kept through Myth)
     { id: 'auto_dig', branch: 'auto', name: 'Kobold Foremen', costs: [2], toggle: true,
-      desc: function () { return 'Buys a Kobold Digger whenever one costs under 10% of your gold.'; } },
+      desc: function () { return 'Buys a Kobold Digger whenever one costs under 10% of your gold. While you are away with an empty lair, they gather spilled coins for the first one.'; } },
     { id: 'auto_build', branch: 'auto', name: 'Master Builders', costs: [6], req: 'auto_dig', toggle: true,
       desc: function () { return 'Buys every unlocked building as gold comes in, best value first. Switch rows off in Lair.'; } },
     { id: 'auto_brood', branch: 'auto', name: 'Brood Matron', costs: [4], toggle: true,
@@ -45,7 +45,7 @@
     { id: 'auto_upg', branch: 'auto', name: 'Lair Steward', costs: [12], req: 'auto_build', toggle: true,
       desc: function () { return 'Buys Lair upgrades as soon as you can afford them.'; } },
     { id: 'auto_sleep', branch: 'auto', name: 'Dream Keeper', costs: [30], req: 'auto_upg',
-      desc: function () { return 'Optional: take the Long Sleep by itself once the Legend gain is big enough.'; } },
+      desc: function () { return 'Optional: take the Long Sleep by itself once the Legend gain is big enough and the run has grown long enough to be worth ending.'; } },
     // ---- Head start (reset by Myth)
     { id: 'start_gold', branch: 'start', name: 'Buried Cache', costs: [1, 4, 15, 60],
       what: 'Starting gold', val: function (lv) { return fmt(START_GOLD[Math.min(4, lv)]); },
@@ -246,7 +246,10 @@
       seedBuildings(s);
     } else if (id === 'start_brood') seedBrood(s);
   }
-  E.addSleepHook('lore', function (s, prev) { seedRun(s, prev); });
+  E.addSleepHook('lore', function (s, prev) {
+    seedRun(s, prev);
+    if (isObj(s.run)) s.run.dkPre = 1; // a fresh run starts below the Sleep threshold (Dream Keeper's warm-up clock)
+  });
 
   // ================================================================ Myth / Ascend
   function mythGainMult(s) { void s; return 1; }   // no relic boosts Myth directly (yet)
@@ -402,6 +405,15 @@
     }
     return n;
   }
+  function eggQuest(s) {
+    var m = s.missions, n = 0;
+    if (!Array.isArray(m)) return 0;
+    for (var i = 0; i < m.length; i++) {
+      var q = m[i];
+      if (isObj(q) && q.tpl === 'tier' && +q.key === 0 && q.done !== true) n = Math.max(n, pos(q.target));
+    }
+    return n;
+  }
   function autoBrood(s, dt, offline) {
     var st = E.stats(s);
     if (budgetState !== s) { budgetState = s; broodBudget = 0; }
@@ -421,6 +433,9 @@
       } else {
         // Eggs: only top up to what raids and new Wyrmlings need soon
         var want = reserve(s, 0) + 20 + (E.isUnlocked(s, 'tier', 1) && tierAutoOn(s, 1) ? 10 * Math.max(1, Math.floor(share / Math.max(1, E.tierCost(s, 1, 1).gold))) : 0);
+        // while you are away nobody else can: at rank 1 (Eggs only, nothing hatches more of them) also work toward an
+        // open "Own N Eggs" quest (else a rank-1 run whose quests are Eggs + a swipe quest sat at rank 1 all night)
+        if (offline && !E.isUnlocked(s, 'tier', 1)) want = Math.max(want, eggQuest(s));
         n = Math.min(n, Math.ceil(want - pos(s.tiers[0])));
       }
       n = Math.min(n, offline ? 1e15 : 1e12);
@@ -466,11 +481,62 @@
     if (n) note('chest', { chests: n, cards: cards });
     return n;
   }
+  // ---- Dream Keeper's run clock. A run's time = its active play + the away time caught up offline (offline() does
+  // not advance run.playActive). run.dkPre marks a run seen below the Sleep threshold; run.dkReady is the run time at
+  // which it first could Sleep (its warm-up). Both live in state.run, so a Sleep or an Ascend clears them.
+  function runClock(s) { return pos(s.run && s.run.playActive) + pos(s.run && s.run.away); }
+  function trackRun(s, dt, offline) {
+    if (!isObj(s.run)) return;
+    if (offline) s.run.away = cl(pos(s.run.away) + pos(dt));
+    if (!E.canSleep(s)) { s.run.dkPre = 1; delete s.run.dkReady; return; }
+    // first seen able to Sleep: the warm-up is the run time so far (a run already past the threshold when first seen,
+    // e.g. an older save, has no measured warm-up and waits for nothing)
+    if (!(fin(s.run.dkReady, -1) >= 0)) s.run.dkReady = s.run.dkPre ? runClock(s) : 0;
+  }
+  function warmup(s) { return isObj(s.run) ? Math.max(0, fin(s.run.dkReady, 0)) : 0; }
+  // a run Dream Keeper ends always lasts at least this long (run time: active play + away). An Ancestral Lair start
+  // is already past the Sleep threshold, so its measured warm-up is ~10 s; without the floor it slept every 15-40 s.
+  var DK_MIN_RUN = 90;
+  // Dream Keeper sleeps when the Sleep is worth it:
+  //  1. it gives at least sleepPct% of the Legend you have (the setting; the bigger the gain next to your Legend,
+  //     the faster the next run), and
+  //  2. the run has paid back its warm-up: every run spends time (W) building up to the Sleep threshold before it
+  //     earns any Legend, and pays that again after each Sleep; Dream Keeper lets the run go on at least another W
+  //     past the threshold (run time >= 2W). With little Legend (a fresh Myth, Legend 0 or 10) condition 1 is met the
+  //     moment the run can Sleep, so without 2 it slept every ~1e7 gold, and in offline catch-up it ended a run that
+  //     had hours left to grow. Late in a Myth W is a few seconds, so its timing is unchanged there.
+  // autoSleepState says what Dream Keeper is waiting for: { on, can, gain, need (the Legend gain it wants),
+  // warm (the run seconds it wants), run (run seconds so far), ready }
+  function autoSleepState(s) {
+    var r = { on: !!s && autoSleepOn(s), can: !!s && E.canSleep(s), gain: 0, need: 0, warm: 0, run: 0, ready: false };
+    if (!s) return r;
+    r.gain = r.can ? E.legendOnSleep(s) : 0;
+    r.need = Math.max(1, Math.ceil(pos(s.legend) * autoSleepPct(s) / 100 - 1e-9));
+    r.run = runClock(s);
+    r.warm = r.can ? Math.max(2 * warmup(s), DK_MIN_RUN) : 0;
+    r.ready = r.on && r.can && r.gain >= 1 && r.gain >= pos(s.legend) * autoSleepPct(s) / 100 && r.run >= r.warm;
+    return r;
+  }
   function wantsAutoSleep(s) {
     if (!autoSleepOn(s) || !E.canSleep(s)) return false;
-    var gain = E.legendOnSleep(s);
-    if (!(gain >= 1)) return false;
-    return gain >= pos(s.legend) * autoSleepPct(s) / 100;
+    return autoSleepState(s).ready;
+  }
+  // ---- offline restart: a run with no income at all (a fresh run without starting gold: no buildings, no brooms)
+  // earns nothing while you are away, so automation could never buy its first building. While away, the Kobold
+  // Foremen gather a quarter of the coins that spill until the first building stands; then the lair takes over.
+  var FOREMEN_SHARE = 0.25;
+  function lairIdle(s, st) {
+    if (pos(st.baseGps) > 0 || pos(st.sweepGps) > 0) return false;
+    for (var i = 0; i < D.buildings.length; i++) if (pos(s.buildings[D.buildings[i].id]) >= 1) return false;
+    return true;
+  }
+  function foremenGather(s, dt) {
+    if (!buildingAutoOn(s, 'digger')) return 0;
+    var st = E.stats(s);
+    if (!lairIdle(s, st)) return 0;
+    var g = pos(st.spillRate) * pos(st.coinWorth) * FOREMEN_SHARE * pos(dt);
+    if (!(g > 0)) return 0;
+    return E.earn(s, g, 'offline');
   }
   // one automation pass; returns the number of actions
   function runAuto(s, dt, offline) {
@@ -489,13 +555,23 @@
     }
     if (wantsAutoSleep(s)) {
       var g = E.sleep(s);
-      if (g > 0) { did++; note('sleep', { gained: g, offline: !!offline }); }
+      if (g > 0) {
+        did++; note('sleep', { gained: g, offline: !!offline });
+        // for the welcome-back sheet (js/ui-lore.js reads and clears it; '_' keys are never saved)
+        if (offline) { var aw = isObj(s._dkAway) ? s._dkAway : (s._dkAway = { n: 0, gain: 0 }); aw.n++; aw.gain = cl(aw.gain + g); }
+      }
     }
     return did;
   }
+  // a long absence with automation running is caught up in steps of at most 30 s (engine offline(), C.offlineStepsMax):
+  // with 200 fixed steps an 8 h night moved in 144 s jumps, so Dream Keeper's Legend swung 1.5k..9k with the hours away
+  if (typeof E.addOfflineStepHook === 'function') E.addOfflineStepHook('lore', function (s) {
+    return masterOn(s) && anyAutoOwned(s) ? 30 : 0;
+  });
   E.addTickHook('lore', function (s, dt, isOffline) {
+    trackRun(s, dt, isOffline);
     if (!masterOn(s) || !anyAutoOwned(s)) { acc = 0; return; }
-    if (isOffline) { runAuto(s, dt, true); return; }
+    if (isOffline) { foremenGather(s, dt); runAuto(s, dt, true); return; }
     acc += dt;
     if (acc < 0.5) return;
     var d = Math.min(acc, 5);
@@ -554,6 +630,7 @@
     setAuto: setAuto,
     anyAutoOwned: anyAutoOwned,
     autoSleepOn: autoSleepOn,
+    autoSleepState: autoSleepState,
     autoSleepPct: autoSleepPct,
     buildingAutoOn: buildingAutoOn,
     tierAutoOn: tierAutoOn,

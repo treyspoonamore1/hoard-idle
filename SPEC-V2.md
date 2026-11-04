@@ -118,14 +118,14 @@ Four branches; show as a vertical list grouped by branch with prerequisites (loc
 **Automation** (kept forever, even through Myth):
 | id | name | cost | effect |
 |---|---|---|---|
-| auto_dig | Kobold Foremen | 2 | Auto-buys Kobold Diggers when affordable |
+| auto_dig | Kobold Foremen | 2 | Auto-buys Kobold Diggers when affordable. In offline catch-up, while the lair has no income at all (no buildings, no brooms: a fresh run without starting gold), they gather 25% of the spilled coins so automation can buy the first building |
 | auto_build | Master Builders | 8 (req auto_dig) | Auto-buys every unlocked building (per-building on/off toggles in Lair rows) |
 | auto_brood | Brood Matron | 5 | Auto-buys minions (per-tier toggles in Brood); never spends more than 50% of current gold per second on minions |
 | auto_quest | Quest Scribe | 4 | Auto-claims finished quests |
 | auto_chest | Chest Kobold | 3 (req auto_quest) | Auto-opens chests (quiet toast summary) |
 | auto_gust | Restless Wings | 6 | Gust fires by itself when charged and ≥ 8 coins are on screen (or after 10s) |
 | auto_upg | Lair Steward | 12 (req auto_build) | Auto-buys Lair upgrades |
-| auto_sleep | Dream Keeper | 30 (req auto_upg) | Optional toggle: take the Long Sleep automatically when Legend gain ≥ X% of current Legend (slider 25–300%) |
+| auto_sleep | Dream Keeper | 30 (req auto_upg) | Optional toggle: take the Long Sleep automatically when Legend gain ≥ X% of current Legend (slider 50–300%) AND the run has lasted at least twice its warm-up W and at least 90 s (W = run time, active + caught-up away time, at which the run first could Sleep; the 90 s floor covers an Ancestral Lair start, which is past the threshold at ~10 s and otherwise slept every 15-40 s). With little Legend (a fresh Myth) the gain rule is met at the threshold itself, so the warm-up rule decides; late in a Myth W is seconds and the gain rule decides. Offline, any automation asks the engine for 30 s sub-steps (`E.addOfflineStepHook`; 8 h = 960 steps instead of 200 of 144 s), and while away at rank 1 (Eggs only) Brood Matron also buys toward an open "Own N Eggs" quest (nobody else can; such a quest plus a swipe quest left a rank-1 run stuck all night). Legend after an 8 h night on the live save no longer swings 1.5K..9K with the hours away. The welcome-back sheet says how many Sleeps Dream Keeper took and for how much Legend |
 
 Automation runs in `addTickHook` (also offline, so idle progress uses it), with a global "Automation on/off" master toggle at the top of the Legend tab and a small top-bar chip "Auto" when anything is active.
 
@@ -215,6 +215,86 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 - **Stats** (`ui-stats.js`): a settings row "Stats" opening a sheet with lifetime stats: total gold earned, coins swiped, distance swiped (CSS px → meters at 96 px/in), treasures, gusts, best streak, Long Sleeps, Myths, fastest Sleep (active time), total play time (active), cards collected X/29, current multipliers breakdown (from `stats()`/M: legend, myth, ember, cards, lore). Needs engine to track `stat.playActive`, `stat.fastestSleep` — foundation adds these fields.
 
 ---------------------------------------------------------------------------
+
+## 4b. Starfall + Growth (slice 1: `js/sky.js`, `js/ui-sky.js`, small hooks in `js/cave.js`)
+
+Every check-in gets a short swiping activity that automation cannot do. Starfalls charge over time; one deliberate
+press on the cave's **Stars** button (or "Start Starfall" in the Hoard tab) starts 25 s of falling stars caught by
+swiping. Stardust from them grows the dragon through 8 stages. **No gold, Legend or card power**: no mod source, no
+cards, never `E.earn`, and **caught stars pay no gold**. The normal coin spill keeps running while stars fall (the
+same swipes still sweep coins), so a Starfall is gold-neutral by design, not by tuning (review round 1: 2-3 coins per
+star with the spill paused moved casual5's Ascend 1 by +11.6% and single moderate seeds by ±18%).
+
+**State** `state.sky` (addStateDefaults, sanitized): `{ on, xp, ch, at, n, caught, stars, best, bestPct, capAt,
+eCaught, lant, lit, gift }`. The stage is derived from `xp`. A running Starfall is `s._skyRun` (never saved).
+Unlock: first Long Sleep, an Ascend or rank 4 (live save: opens on load with the 2-Starfall gift).
+
+| # | Stage | Stardust | Starfall after reaching it (cumulative) | Look (dragon scale + decoration) |
+|---|---|---|---|---|
+| 1 | Hatchling | 0 | 25 s, cap 4, one per 30 min, 1.4 stars/s, twins 15%, no comet | ×1.00 |
+| 2 | Fledgling | 100 | 1 comet | ×1.04 |
+| 3 | Juvenile | 600 | cap 5 | ×1.08, longer horns |
+| 4 | Young | 2,000 | 30 s | ×1.12, wing spines |
+| 5 | Adult | 6,000 | 2 comets, twins 25% | ×1.16 |
+| 6 | Great | 15,000 | one per 25 min | ×1.19, glowing belly scales |
+| 7 | Elder | 35,000 | cap 6 | ×1.22, golden frill |
+| 8 | Ancient | 75,000 | every 5th is a Grand Starfall: 45 s, 2.2 stars/s, Stardust ×1.5 | ×1.25, crown of stars |
+| – | Star Scales | +25,000 each | cosmetic pips | – |
+
+**Scoring** (per caught star, in the UI): combo +1; value `1 + min(4, floor(combo/6))`; a twin pair caught in one
+stroke counts its two values again. A star that reaches the hoard halves the combo (a full reset made values above
+1 rare for anyone not aiming perfectly). A comet followed for 160 px (swipe segments within 40 px of its body, head to
+120 px down its tail, direction cos ≥ 0.6) is ridden (+15), so chasing it works as well as overtaking it; touched but
+not ridden is a graze (+1). The first comets show "Swipe along the comet" until one is ridden (flag `skyRide`).
+`finish` clamps everything (total ≤ maxStars, base ≤ 10·caught, rides ≤ comets ...), then
+`dust = round((base + 15·rides + cuts) × (1 + 0.1·clamp(rank − 6, 0, 6)) × (1 + 0.08·lanterns) × (grand ? 1.5 : 1))`
+and spends exactly one charge (start never spends; abort spends and gives nothing).
+
+**Ember watches the sky**: while the Starfalls sit at the cap and Ember is awake, she catches a falling star (+10
+Stardust) every charge period, at most 4 per at-cap stretch, live or away (capAt is worked out from the accrual, so
+time away counts the same). **First Light**: the first time each Myth a run reaches ranks 7..12: +40·(rank − 6)
+Stardust (840 per Myth); a Long Sleep keeps it, an Ascend resets it. The rank box says "First Light: +40 Stardust,
+and brighter skies: +10% Stardust." when the next rank is 7+ and not yet lit this Myth (else just the brighter skies). **Sky Lanterns** (Ember tab): 2M / 10M / 50M / 250M / 1.25B embers; each +8% Stardust and
+stars fall 3% slower (Starfall only; spends `ember.embers`, never `ember.earned`, so warmth is unchanged). One level
+per deliberate press (a hold does not repeat: five expensive one-off levels).
+
+**UI**: launcher `#skybtn` (52 px, above Gust; "Stars 2/4", "in 14m", "18s ×12" while running, soft glow when full;
+`pointer-events: none` while stars fall); cave layers `skynight` (z −2, night tint) and `sky` (z 1: stars, twin
+threads, comets, progress line, combo above the finger, "Grand Starfall" banner, first-time hint); score sheet
+(caught, best combo, comet Ridden / Grazed / Missed (no row without a comet), twin pairs, Stardust with the
+multiplier reason, animated growth bar, stage-up line, Again / Close; its backdrop ignores presses for 0.7 s; if
+another sheet is open at the end, a toast sums the Starfall up instead of replacing it); Hoard tab section "Night Sky"
+(order −10, dot badge when full); Ember tab section "Sky Lanterns" (order 80). While stars fall, every toast except
+the sky's own waits in the queue (`ui.holdToasts`) and the streak meter / rush pill dim to 30% (`cave.setHudDim`),
+so the top of the cave where stars enter stays clear. The welcome-back sheet gets a "Night sky:" line (Starfalls
+ready, Ember's catches, growth, First Light while away). Safety: the `sky` layer never throws (an error aborts the
+Starfall, nothing spent) and a watchdog aborts a Starfall whose clock stopped for 2.5 s while visible. A swipe that
+starts on the launcher and slides more than 8 px does not start a Starfall.
+Growth: `cave.setDragonScale(stage scale)` and `cave.setDragonDecor(fn)` (decorations drawn in the dragon's own
+transform so they follow its hop and head turn). Aborts (nothing spent): page hidden, state replaced, Ascend. A Long
+Sleep mid-Starfall does not abort (the rank bonus uses the higher of the start and finish rank).
+
+**Log**: `starfall_start {ch, stage}`, `starfall {caught, total, best, dust, rides, twins, sec, stage, rank, grand,
+ch}`, `starfall_abort {why, sec}`, `sky {type: open|stage|light|lantern|ember, ...}`, `skyopen {ch, cap}` at session
+start (and on return after 5+ min hidden).
+
+### Pacing gate (tools/sim-lore.cjs, `EMBER=1`; moderate 8 h seeds 1-6, casual5 10 h seeds 1-3)
+
+Round 1 paid 2-3 coins per caught star and paused the spill; that moved single seeds by up to ±18% (casual5 Ascend 1
++11.6%), so round 2 made the Starfall gold-neutral **by design**: stars pay no gold and the spill keeps running.
+`STARFALL=1` = the sim player runs a Starfall whenever one is ready while swiping (80% caught, Stardust only).
+`SFCOINS=n` / `SFSPILL=1` remain as what-ifs for the round-1 designs.
+
+| run | Sleep 1 | Ascend 1 / 2 / 3 | Myth at the end | quests | Starfall stage at the end |
+|---|---|---|---|---|---|
+| moderate seeds 1-6, without vs with `STARFALL` | identical | identical | identical | OK | 4 Young on all 6 (2.3-2.9K Stardust, 17 Starfalls) |
+| casual5 seeds 1-3, without vs with `STARFALL` | identical | identical (5.00/6.50, 5.50/7.50, 5.00/7.00 h) | identical | OK | 3 Juvenile (1.8-2.0K, 20 Starfalls) |
+
+Every sim-lore output above, minus its one `Starfall:` summary line, is **byte-identical** to the tree before
+Starfall (and to the same run without `STARFALL`); `tools/sim.cjs` is byte-identical too. No NaN in any run. The
+moderate player never passes stage 5 by 8 h. Dream Keeper's 90 s floor only changes runs with Dream Keeper on
+(`AUTOSLEEP=50`, seeds 1-2): Dream Keeper runs under 60 s 32 / 54 -> 0, first Sleep after an Ascend 0.0-0.5 min ->
+1.5 min, Ascend 1 1.81 -> 1.75 h and 1.85 -> 1.87 h; quest balance OK.
 
 ## 5. Publishing
 

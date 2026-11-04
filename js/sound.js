@@ -401,9 +401,13 @@
       bell(880, 0, 0.05, 0.4, 0.35, -0.1);
       bell(1318.5, 0.07, 0.045, 0.5, 0.4, 0.1);
     },
+    star: function (d) {                                     // a caught falling star: a small bell rising with the combo
+      var k = Math.min(PENTA.length - 1, Math.floor(Math.max(0, fin(d && d.combo, 0)) / 3));
+      bell(semi(1567.98, PENTA[k]) * jitter(20), 0, 0.045, 0.3, 0.45, (Math.random() - 0.5) * 0.6);
+    },
     preview: function () { SFX.coin({ n: 1, streak: 1 }); }
   };
-  var LOW = { coin: 1, buy: 1, preview: 1 };
+  var LOW = { coin: 1, buy: 1, star: 1, preview: 1 };
 
   function play(name, data) {
     var fn = SFX[name];

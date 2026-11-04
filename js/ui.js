@@ -12,7 +12,7 @@
     // Node / headless: the whole API exists as harmless no-ops so feature modules can load anywhere
     var noop = function () { return false; };
     ['init', 'frame', 'welcome', 'toast', 'refresh', 'markDirty', 'addTab', 'addSection', 'removeSection', 'addSetting', 'addChip',
-      'addRowExtra', 'sheet', 'closeSheet', 'css', 'setTab', 'openSettings', 'copyText'].forEach(function (k) { ui[k] = noop; });
+      'addRowExtra', 'sheet', 'closeSheet', 'css', 'setTab', 'openSettings', 'copyText', 'holdToasts', 'addWelcomeLine'].forEach(function (k) { ui[k] = noop; });
     ui.ask = ui.confirm = function () { return Promise.resolve(false); };
     ui.icons = {};
     return;
@@ -306,9 +306,17 @@
   }
 
   // ---------------------------------------------------------------- toasts
+  // toastHold(t) -> true keeps that toast queued (ui.holdToasts: a Starfall holds back everything but its own toasts)
+  var toastHold = null;
+  function held(t) { if (!toastHold) return false; try { return !!toastHold(t); } catch (e) { return false; } }
   function toast(title, text, kind) {
     toastQ.push({ title: title || '', text: text || '', kind: kind || '' });
-    if (toastQ.length > 8) toastQ.shift();
+    if (toastQ.length > (toastHold ? 16 : 8)) {
+      // a long hold (a Starfall) drops the oldest plain toast first, keeping gold / ember / sky news
+      var di = 0;
+      if (toastHold) for (var q = 0; q < toastQ.length; q++) if (!toastQ[q].kind) { di = q; break; }
+      toastQ.splice(di, 1);
+    }
     pumpToasts();
   }
   // toasts sit at the top of the cave; while a sheet is open they move to the top of the screen, above it
@@ -324,17 +332,20 @@
     if (!$.toasts) return;
     if (toastQ.length) placeToasts();
     while (toastLive.length < MAX_TOASTS && toastQ.length) {
-      var t = toastQ.shift();
+      var qi = 0;
+      if (toastHold) { while (qi < toastQ.length && held(toastQ[qi])) qi++; if (qi >= toastQ.length) break; }
+      var t = toastQ.splice(qi, 1)[0];
       var n = el('div', 'toast' + (t.kind ? ' ' + t.kind : ''));
       if (t.title) { n.appendChild(el('b', null, t.title)); if (t.text) n.appendChild(document.createTextNode(' ')); }
       if (t.text) n.appendChild(document.createTextNode(t.text));
+      n._t = t;
       $.toasts.appendChild(n);
       toastLive.push(n);
       scheduleToastEnd(n);
     }
   }
   function scheduleToastEnd(n) {
-    setTimeout(function () {
+    n._timer = setTimeout(function () {
       n.classList.add('out');
       setTimeout(function () {
         if (n.parentNode) n.parentNode.removeChild(n);
@@ -360,6 +371,10 @@
     setCls(ov, 'center', !!o.center);
     ov.classList.add('open');
     ov._dismiss = o.dismissable !== false;
+    // a backdrop press only dismisses when it started on the backdrop after the sheet opened (a swipe that ends where
+    // a sheet just appeared never closes it), and not within o.guardMs of opening
+    ov._downOk = false;
+    ov._guardUntil = Date.now() + Math.max(0, +o.guardMs || 0);
     sheetOpen = true;
     placeToasts();
     sheetOnClose = typeof o.onClose === 'function' ? o.onClose : null;
@@ -848,13 +863,17 @@
   function keyBrood(state) { return 'B' + state.rank; }
 
   // ================================================================ QUESTS
-  function nextRankPerk(rank) {
-    var nr = rank + 1, out = [];
+  function nextRankPerk(rank, state) {
+    var nr = rank + 1, out = [], sky = '';
+    if (nr >= 7 && nr <= 12 && HOARD.sky && state && HOARD.sky.on(state)) {
+      var lit = state.sky ? Math.floor(num(state.sky.lit)) : 0;
+      sky = nr > lit ? ' First Light: +' + (40 * (nr - 6)) + ' Stardust, and brighter skies: +10% Stardust.' : ' Brighter skies: +10% Stardust.';
+    }
     D.buildings.forEach(function (b) { if (b.rank === nr) out.push(b.name); });
     D.tiers.forEach(function (t, i) { if (i + 1 === nr) out.push(t.name); });
-    if (out.length) return 'Next rank unlocks ' + out.join(' and ') + ', plus a bonus chest.';
-    if (nr > D.C.rankGpsAfter) return 'Next rank: +5% gold/s and a bonus chest.';
-    return 'Next rank: a bonus chest.';
+    if (out.length) return 'Next rank unlocks ' + out.join(' and ') + ', plus a bonus chest.' + sky;
+    if (nr > D.C.rankGpsAfter) return 'Next rank: +5% gold/s and a bonus chest.' + sky;
+    return 'Next rank: a bonus chest.' + sky;
   }
   function buildQuests(state) {
     var root = el('div');
@@ -872,7 +891,7 @@
       rb.appendChild(pips);
       var rsub = el('div', 'sub num');
       rb.appendChild(rsub);
-      rb.appendChild(el('div', 'sub', nextRankPerk(rank)));
+      rb.appendChild(el('div', 'sub', nextRankPerk(rank, state)));
       parts.push(function (s) {
         var prog = Math.floor(num(s.rankProgress));
         for (var k = 0; k < pipEls.length; k++) setCls(pipEls[k], 'on', k < prog);
@@ -952,7 +971,7 @@
     return { root: root, patch: function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); } };
   }
   function keyQuests(state) {
-    var k = 'Q' + state.rank + ':';
+    var k = 'Q' + state.rank + (HOARD.sky && HOARD.sky.on(state) ? 's' : '') + ':';
     var m = state.missions || [];
     for (var i = 0; i < m.length; i++) k += (m[i] && m[i].uid) + ',';
     return k;
@@ -1692,6 +1711,8 @@
   }
 
   // ---------------------------------------------------------------- welcome back
+  var welcomeLines = [];   // fn(state, offlineResult) -> string | { text, cls } | null
+  ui.addWelcomeLine = function (fn) { if (typeof fn === 'function' && welcomeLines.indexOf(fn) < 0) welcomeLines.push(fn); };
   ui.welcome = function (res) {
     if (!inited || !res) return;
     var sec = num(res.seconds);
@@ -1718,6 +1739,13 @@
     var capH = 8;
     try { capH = num(E.stats(s).offlineCapHours, 8); } catch (e) { capH = 8; }
     if (sec >= capH * 3600 - 1) box.appendChild(el('p', 'muted', 'Your hoard can only grow for ' + capH + 'h while you are away.'));
+    // extra lines from feature modules (ui.addWelcomeLine): Dream Keeper's Sleeps, the night sky, ...
+    for (var wl = 0; wl < welcomeLines.length; wl++) {
+      var line = null;
+      try { line = welcomeLines[wl](s, res); } catch (e) { line = null; }
+      if (line && typeof line === 'string') box.appendChild(el('p', 'welcome-line', line));
+      else if (line && typeof line === 'object' && typeof line.text === 'string') box.appendChild(el('p', 'welcome-line' + (line.cls ? ' ' + line.cls : ''), line.text));
+    }
     var nAff = 0;
     if (s && num(s.legendPts) >= 1) {
       var LO = HOARD.lore;
@@ -1818,6 +1846,24 @@
   };
   ui.closeSheet = function () { closeSheet(); };
   ui.sheetOpen = function () { return sheetOpen; };
+  // fn(toast {title, text, kind}) -> true holds that toast in the queue; null lets them all through again
+  // toasts already showing that the hold covers go back to the front of the queue (they show again afterwards)
+  ui.holdToasts = function (fn) {
+    toastHold = typeof fn === 'function' ? fn : null;
+    if (toastHold) {
+      var back = [];
+      for (var i = toastLive.length - 1; i >= 0; i--) {
+        var n = toastLive[i];
+        if (!n._t || !held(n._t) || n.classList.contains('out')) continue;
+        clearTimeout(n._timer);
+        if (n.parentNode) n.parentNode.removeChild(n);
+        toastLive.splice(i, 1);
+        back.unshift(n._t);
+      }
+      if (back.length) toastQ = back.concat(toastQ);
+    }
+    pumpToasts();
+  };
   ui.openSettings = openSettings;
   ui.icons = ICONS;
   ui.state = S;
@@ -1867,8 +1913,13 @@
     });
     var setBtn = document.getElementById('btn-settings');
     if (setBtn) setBtn.addEventListener('click', function () { openSettings(); });
+    $.overlay.addEventListener('pointerdown', function (e) {
+      $.overlay._downOk = e.target === $.overlay && Date.now() >= ($.overlay._guardUntil || 0);
+    });
     $.overlay.addEventListener('click', function (e) {
-      if (e.target === $.overlay && $.overlay._dismiss) closeSheet();
+      var okDown = $.overlay._downOk !== false;
+      $.overlay._downOk = false;
+      if (e.target === $.overlay && $.overlay._dismiss && okDown && Date.now() >= ($.overlay._guardUntil || 0)) closeSheet();
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && sheetOpen && $.overlay._dismiss) closeSheet();

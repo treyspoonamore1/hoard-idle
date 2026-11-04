@@ -12,6 +12,8 @@
   if (typeof document === 'undefined') {
     // Node / headless sim: harmless no-op API.
     cave.init = cave.frame = cave.resize = cave.gust = cave.addLayer = cave.removeLayer = cave.addSfxHook = cave.float = cave.burst = function () {};
+    cave.addSwipeHook = cave.removeSwipeHook = cave.setHudDim = cave.setDragonScale = cave.setDragonDecor = function () {};
+    cave.hudDim = function () { return 1; };
     cave.streak = function () { return 1; };
     cave.anchor = function () { return { x: 0, y: 0, cx: 0, cy: 0 }; };
     cave.metrics = function () { return null; };
@@ -91,6 +93,30 @@
   var layers = [];      // { id, z, draw(ctx, w, h, t, dt, state), _err }
   var sfxHooks = [];    // fn(name, data)
   var frameDt = 0, stRamp = 1;
+  // Starfall (js/ui-sky.js): swipe hooks see every swipe segment, the top-left HUD can dim, the dragon can grow
+  var swipeHooks = [];  // { fn(px, py, x, y, t, strokeSeq), err }
+  var strokeSeq = 0, hudDim = 1, dScale = 1, decor = null, decorErr = 0;
+  function dkS() { return dk * dScale; }
+  function runSwipeHooks(ax, ay, bx, by, t) {
+    for (var i = 0; i < swipeHooks.length; i++) {
+      var h = swipeHooks[i];
+      try { h.fn(ax, ay, bx, by, t, strokeSeq); } catch (e) {
+        h.err++;
+        if (h.err === 1) { try { console.error('[HOARD] cave swipe hook', e); } catch (e2) { /* ignore */ } }
+        if (h.err >= 5) { swipeHooks.splice(i, 1); i--; }
+      }
+    }
+  }
+  // dragon decorations drawn inside the dragon's own transform (so they follow its hop, breath and head turn)
+  function drawDecor(g, part) {
+    if (!decor || decorErr >= 5) return;
+    g.save();
+    try { decor(g, part, clock, rm); } catch (e) {
+      decorErr++;
+      if (decorErr === 1) { try { console.error('[HOARD] dragon decor', e); } catch (e2) { /* ignore */ } }
+    }
+    g.restore();
+  }
   function sfx(name, data) {
     for (var i = 0; i < sfxHooks.length; i++) {
       try { sfxHooks[i](name, data); } catch (e) { /* a sound bug must never break swiping */ }
@@ -171,7 +197,7 @@
     return ph * t * Math.sqrt(t);
   }
   function groundY(x) { return baseY - moundH(x - W * 0.5, pileW, pileH); }
-  function dragonHalf() { return 44 * dk; }
+  function dragonHalf() { return 44 * dkS(); }
   function peakY() { return baseY - pileH; }
 
   // ---------------------------------------------------------------- palette + sprites
@@ -788,6 +814,7 @@
       if (c.on && segHit(px, py, x, y, c.x, c.y, COIN_HIT)) collectCoin(c, x, y);
     }
     if (tr.on && segHit(px, py, x, y, tr.x, tr.y, TREASURE_HIT)) grabTreasure();
+    if (swipeHooks.length) runSwipeHooks(px, py, x, y, t);
     trailPush(x, y, newStroke);
     newStroke = false;
     pushGH(x, y, t);
@@ -797,7 +824,7 @@
   function onDown(e) {
     if (down && e.pointerId !== pid) return;
     if (e.button !== undefined && e.button > 0) return;
-    down = true; pid = e.pointerId;
+    down = true; pid = e.pointerId; strokeSeq++;
     try { canvas.setPointerCapture(pid); } catch (err) { /* ignore */ }
     var r = canvas.getBoundingClientRect();
     rectL = r.left; rectT = r.top;
@@ -985,7 +1012,7 @@
     blinkT -= dt;
     if (blinkT <= 0) { blinkA = 0.16; blinkT = 2.4 + Math.random() * 4; if (Math.random() < 0.2) blinkT = 0.25; }
     if (blinkA > 0) blinkA = Math.max(0, blinkA - dt);
-    var ex = W * 0.5 + 41 * dk, ey = peakY() - 60 * dk, tx = 0.35, ty = 0.1;
+    var ex = W * 0.5 + 41 * dkS(), ey = peakY() + 4 * dk - 64 * dkS(), tx = 0.35, ty = 0.1;
     if (down && fx >= 0) { tx = (fx - ex) / 110; ty = (fy - ey) / 110; }
     else if (tr.on) { tx = (tr.x - ex) / 110; ty = (tr.y - ey) / 110; }
     else if (kob.on) { tx = (kob.x - ex) / 160; ty = 0.6; }
@@ -1003,7 +1030,7 @@
       smokeT -= dt;
       if (smokeT <= 0) {
         smokeT = 4 + Math.random() * 5;
-        var nx = W * 0.5 + 60 * dk, ny = peakY() - 55 * dk;
+        var nx = W * 0.5 + 60 * dkS(), ny = peakY() + 4 * dk - 59 * dkS();
         spawnPart(P_SMOKE, nx, ny, 18, -22, 1.6, 3 * dk);
         spawnPart(P_SMOKE, nx + 3, ny + 1, 26, -14, 1.4, 2.2 * dk);
       }
@@ -1048,6 +1075,7 @@
     g.fillStyle = D_BELLY; ell(g, 4, -13, 25, 11); g.fill();
     g.strokeStyle = D_BELLY_LINE; g.lineWidth = 1.2;
     for (i = 0; i < 3; i++) { g.beginPath(); g.arc(-5 + i * 9, -20, 7, 0.28 * Math.PI, 0.72 * Math.PI); g.stroke(); }
+    if (decor) drawDecor(g, 'belly');
     // folded wing
     g.save();
     g.translate(-14, -38);
@@ -1068,6 +1096,7 @@
     g.moveTo(-3, -2); g.lineTo(-38, 2);
     g.stroke();
     g.fillStyle = D_HORN; ell(g, -4, -40, 1.8, 1.8); g.fill();
+    if (decor) drawDecor(g, 'wing');
     g.restore();
     // neck
     g.fillStyle = dragonGrad;
@@ -1093,6 +1122,7 @@
     g.save();
     g.translate(40, -60);
     g.rotate(lookY * 0.08 + Math.sin(clock * 0.9) * 0.03);
+    if (decor) drawDecor(g, 'headBack');
     g.fillStyle = D_HORN;
     g.beginPath(); g.moveTo(-9, -6); g.quadraticCurveTo(-17, -13, -24, -25); g.quadraticCurveTo(-12, -17, -2, -10); g.closePath(); g.fill();
     g.fillStyle = '#d9c7a3';
@@ -1119,6 +1149,7 @@
       g.strokeStyle = D_DARK; g.lineWidth = 1.4;
       g.beginPath(); g.moveTo(ex - 5, ey); g.quadraticCurveTo(ex, ey + 2.4, ex + 5, ey); g.stroke();
     }
+    if (decor) drawDecor(g, 'head');
     g.restore();
     g.restore();
   }
@@ -1327,7 +1358,7 @@
       var prog = nextT > 0 ? clamp((stkT - ST_AT[stkIdx]) / (nextT - ST_AT[stkIdx]), 0, 1) : 1;
       var hot = mv >= 5;
       g.save();
-      g.globalAlpha = stkShow;
+      g.globalAlpha = stkShow * hudDim;
       g.fillStyle = 'rgba(12,9,18,0.62)'; ell(g, x, y, r + 4, r + 4); g.fill();
       g.lineWidth = 4; g.lineCap = 'round';
       g.strokeStyle = 'rgba(255,255,255,0.1)'; ell(g, x, y, r, r); g.stroke();
@@ -1409,7 +1440,7 @@
     g.restore();
     if (layers.length) drawLayers(false); // z < 0: behind the dragon, in front of the hoard
     if (kob.on) drawKobold();
-    drawDragon(W * 0.5, peakY() + 4 * dk, dk);
+    drawDragon(W * 0.5, peakY() + 4 * dk, dkS());
     drawCoins();
     if (tr.on) drawTreasure();
     drawParts(false);
@@ -1561,6 +1592,28 @@
     for (var i = 0; i < layers.length; i++) if (layers[i].id === id) { layers.splice(i, 1); return true; }
     return false;
   };
+  // Starfall hooks (EXTENSIONS.md 4): fn(px, py, x, y, t, strokeSeq) for every swipe segment, after the coins and
+  // the treasure (canvas-local CSS px; strokeSeq goes up by one per finger-down). A hook that throws 5 times is dropped.
+  cave.addSwipeHook = function (fn) {
+    if (typeof fn !== 'function') return false;
+    for (var i = 0; i < swipeHooks.length; i++) if (swipeHooks[i].fn === fn) return false;
+    swipeHooks.push({ fn: fn, err: 0 });
+    return true;
+  };
+  cave.removeSwipeHook = function (fn) {
+    for (var i = 0; i < swipeHooks.length; i++) if (swipeHooks[i].fn === fn) { swipeHooks.splice(i, 1); return true; }
+    return false;
+  };
+  // dim the streak meter in the top-left (and, by reading cave.hudDim(), other top-of-cave HUD layers) while a
+  // Starfall needs that space: 0.2..1
+  cave.setHudDim = function (a) { a = +a; hudDim = isFinite(a) ? clamp(a, 0.2, 1) : 1; };
+  cave.hudDim = function () { return hudDim; };
+  // grow the dragon: 1..1.25 (its eye anchor and the coin keep-out zone follow)
+  cave.setDragonScale = function (k) { k = +k; dScale = isFinite(k) ? clamp(k, 1, 1.25) : 1; };
+  cave.dragonScale = function () { return dScale; };
+  // fn(g, part, clock, reducedMotion) draws inside the dragon's transform (dragon units, origin at its feet);
+  // part: 'wing' (folded-wing frame), 'belly', 'headBack' (head frame, before the horns), 'head' (head frame, on top)
+  cave.setDragonDecor = function (fn) { decor = typeof fn === 'function' ? fn : null; decorErr = 0; };
   cave.addSfxHook = function (fn) {
     if (typeof fn !== 'function' || sfxHooks.indexOf(fn) >= 0) return false;
     sfxHooks.push(fn);
@@ -1570,7 +1623,7 @@
   cave.anchor = function (name) {
     var x = W * 0.5, y = H * 0.5;
     if (name === 'hoard') { x = W * 0.5; y = peakY() + pileH * 0.35; }
-    else if (name === 'dragon') { x = W * 0.5 + 41 * dk; y = peakY() - 60 * dk; }
+    else if (name === 'dragon') { x = W * 0.5 + 41 * dkS(); y = peakY() + 4 * dk - 64 * dkS(); }
     else if (name === 'floor') { x = W * 0.5; y = baseY; }
     else if (name === 'nookL') { x = Math.max(36, W * 0.13); y = baseY - 6 * dk; }
     else if (name === 'nookR') { x = Math.min(W - 36, W * 0.87); y = baseY - 6 * dk; }

@@ -93,6 +93,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     // offline
     offlineCapHours: 8,
     offlineSteps: 200,
+    offlineStepsMax: 960,    // with a module's offline step wish (engine addOfflineStepHook): at most this many sub-steps
     offlineModalMin: 60,
     // safety
     maxNum: 1e300,

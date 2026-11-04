@@ -179,6 +179,7 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
   check(Object.keys(u.upgrades).length >= 3, 'Lair Steward buys upgrades (' + Object.keys(u.upgrades).join(',') + ')');
   // Dream Keeper
   const k = fresh(); k.lore.auto_sleep = 1; k.legend = 10; k.legendPts = 0; k.earnedRun = 3.1e8; // gain floor(3.2 * cbrt(31)) = 10 = 100%
+  k.run.playActive = 5000; // an old run (Dream Keeper never ends a run younger than 90 s)
   tickN(k, 4);
   check(k.sleeps === 0, 'Dream Keeper is off until its toggle is on');
   k.auto.sleep = true; k.auto.sleepPct = 150; tickN(k, 4);
@@ -209,6 +210,117 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
   E.offline(k, 3600);
   check(k.sleeps >= 1, 'Dream Keeper sleeps offline');
   noBad(a, 'offline a'); noBad(b, 'offline b'); noBad(k, 'offline k');
+}
+
+// ---------------------------------------------------------------- Dream Keeper: worth-it rule (gain >= sleepPct% of
+// Legend AND run time >= 2x its warm-up W, the run time it took to reach the Sleep threshold)
+// play(s, sec): online ticks of 1 s with the player swiping 2 coins/s; returns when Dream Keeper slept (or sec ran out)
+// and when the run first could Sleep / first met the old gain-only rule, with the gains at those moments.
+function play(s, sec) {
+  const r = { first: null, firstGain: 0, old: null, slept: null, gain: 0 }, sl0 = s.sleeps, nEv = events.length;
+  for (let t = 1; t <= sec; t++) {
+    s._caveActive = true; E.tick(s, 1); E.coinCollected(s, 2, 3, 1);
+    if (s.sleeps > sl0) { r.slept = t; r.gain = (events.slice(nEv).find(e => e[0] === 'sleep') || [0, 0])[1]; break; }
+    if (r.first == null && E.canSleep(s)) { r.first = t; r.firstGain = E.legendOnSleep(s); }
+    if (r.old == null && E.canSleep(s) && E.legendOnSleep(s) >= s.legend * L.autoSleepPct(s) / 100) r.old = t;
+  }
+  return r;
+}
+const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-ascend.json'), 'utf8');
+{
+  // (a) the player's save right after the Ascend (Legend 10, Dream Keeper on at 50%) and the same with Legend 0
+  for (const L0 of [10, 0]) {
+    const s = E.deserialize(POST); s.legend = L0; s.legendPts = L0; E.dirty();
+    check(L.autoSleepOn(s) && L.autoSleepPct(s) === 50 && s.myth === 2 && s.relics.r_legend === 1, 'post-Ascend save (Legend ' + L0 + '): Dream Keeper on at 50%');
+    const r = play(s, 7200);
+    console.log('post-Ascend Legend ' + L0 + ': first chance at ' + r.first + ' s (+' + r.firstGain + '), Dream Keeper slept at ' + r.slept + ' s (+' + r.gain + ')');
+    check(r.first != null && r.old === r.first, 'post-Ascend Legend ' + L0 + ': the old rule would sleep at the first chance (' + r.first + ' s, +' + r.firstGain + ')');
+    check(r.slept != null && r.slept > r.first + 5, 'post-Ascend Legend ' + L0 + ': Dream Keeper does not sleep at the first chance (could at ' + r.first + ' s, slept at ' + r.slept + ' s)');
+    check(r.slept >= 2 * r.first - 6 && r.slept <= 2 * r.first + 6, 'post-Ascend Legend ' + L0 + ': it sleeps once the run is twice its warm-up (' + r.slept + ' s vs 2 x ' + r.first + ' s; the saved run had 4 s on its clock)');
+    check(r.gain > r.firstGain, 'post-Ascend Legend ' + L0 + ': the later Sleep gives more Legend (+' + r.gain + ' vs +' + r.firstGain + ' at the first chance)');
+    noBad(s, 'post-Ascend ' + L0);
+  }
+  // a fresh Ascend in this engine (Legend exactly 0), Sleep threshold reached by gold the run earns itself
+  const s = fresh(); s.legend = L.MYTH.minLegend; s.legendPts = 1e9;
+  ['auto_dig', 'auto_build', 'auto_brood', 'auto_quest', 'auto_chest', 'auto_upg', 'auto_sleep', 'myth_gate'].forEach(id => L.buy(s, id));
+  check(L.ascend(s) >= 1 && s.legend === 0, 'Ascend to Legend 0 keeps Dream Keeper');
+  s.auto.sleep = true; s.auto.sleepPct = 50;
+  const st0 = L.autoSleepState(s);
+  check(st0.on && !st0.can && !st0.ready, 'autoSleepState: on, below the threshold, not ready');
+  const r = play(s, 7200);
+  check(r.first != null && r.slept > r.first + 5 && r.gain > r.firstGain, 'Legend 0 after Ascend: no Sleep at the first chance (' + r.first + ' s, +' + r.firstGain + '), slept at ' + r.slept + ' s for +' + r.gain);
+  // the warm-up clock: run.dkReady set at the threshold, cleared by the Sleep
+  check(!('dkReady' in s.run) && s.run.dkPre === 1, 'a Sleep starts a new warm-up clock (dkPre set, dkReady cleared)');
+}
+{
+  // (b) mid-game: once the run reaches the threshold within seconds, Dream Keeper sleeps exactly when the gain rule says
+  for (const [Lg, pct] of [[300, 50], [2000, 50], [2000, 100], [20000, 50]]) {
+    const s = E.deserialize(POST); s.legend = Lg; s.legendPts = 0; s.auto.sleepPct = pct;
+    s.lore.greed = 8; s.lore.halls = 5; s.lore.dreams = 2; s.lore.start_gold = 3; E.resetRun(s, 'sleep'); E.dirty();
+    const r = play(s, 7200);
+    console.log('mid-game Legend ' + Lg + ' at ' + pct + '%: threshold at ' + r.first + ' s, gain rule met at ' + (r.old == null ? r.slept : r.old) + ' s, Dream Keeper slept at ' + r.slept + ' s (+' + r.gain + ')');
+    // old == null: the gain rule was first met in the very tick Dream Keeper slept
+    check(r.slept != null && r.slept - (r.old == null ? r.slept : r.old) <= 1, 'mid-game Legend ' + Lg + ' at ' + pct + '%: Dream Keeper sleeps when the gain rule is met (' + r.old + ' s -> slept ' + r.slept + ' s, warm-up ' + r.first + ' s)');
+  }
+  // an older save already past the threshold (no measured warm-up) is not held back
+  const k = fresh(); k.lore.auto_sleep = 1; k.auto.sleep = true; k.auto.sleepPct = 100; k.legend = 10; k.earnedRun = 3.1e8; k.run.playActive = 5000;
+  tickN(k, 2);
+  check(k.sleeps === 1, 'a run first seen past the threshold sleeps at once (no warm-up known)');
+}
+{
+  // (c) the player's live save offline for 8 h: Kobold Foremen restart the empty lair, automation rebuilds, Dream
+  // Keeper sleeps when it is worth it, and the 8 h end with far more than 10 Legend
+  const s = E.deserialize(POST), o = JSON.parse(POST);
+  check(s.legend === 10 && s.sleeps === 19 && s.myth === 2 && s.mythPts === 1 && s.relics.r_legend === 1 && Object.keys(s.cards).length === Object.keys(o.cards).length, 'live save loads: Legend 10, 19 Sleeps, Myth 2, Saga Stone, all card types');
+  check(Object.keys(o.lore).every(k => s.lore[k] === o.lore[k]) && s.auto.sleep === true && s.auto.sleepPct === 50, 'live save keeps its automation lore and Dream Keeper setting');
+  check(s.gold === 0 && s.buildings.digger === 0 && E.stats(s).gps === 0, 'live save: an empty fresh run with no income');
+  const res = E.offline(s, 8 * 3600);
+  console.log('live save, 8 h away: Legend 10 -> ' + s.legend + ', ' + (s.sleeps - 19) + ' Dream Keeper Sleeps, rank ' + s.rank + ', gold/s ' + H.fmt(E.stats(s).baseGps));
+  check(res.seconds === 8 * 3600 && s.legend >= 1000 && s.sleeps >= 19 + 3, 'live save, 8 h away: far more than 10 Legend (' + s.legend + ', ' + (s.sleeps - 19) + ' Sleeps)');
+  noBad(s, 'live save offline');
+  // what the welcome-back sheet reads (js/ui-lore.js): the Sleeps Dream Keeper took while away
+  check(s._dkAway && s._dkAway.n === s.sleeps - 19 && s._dkAway.gain === s.legend - 10 && !('_dkAway' in JSON.parse(E.serialize(s))), 'offline Sleeps recorded for the welcome sheet (' + JSON.stringify(s._dkAway) + '), never saved');
+  // Legend while away grows with the time away (it no longer swings with the length of the absence: 30 s sub-steps,
+  // and Brood Matron works toward an open Eggs quest so a rank-1 run is not stuck all night)
+  const awayL = [2, 4, 6, 8].map(h => { const a = E.deserialize(POST); E.offline(a, h * 3600); return a.legend; });
+  console.log('live save, Legend after 2/4/6/8 h away: ' + awayL.join(' / '));
+  check(awayL.every((x, i) => i === 0 || x >= awayL[i - 1] * 0.9) && awayL[3] > awayL[0] * 2, 'Legend away grows with the hours away (' + awayL.join(', ') + ')');
+  check(E.addOfflineStepHook && D.C.offlineStepsMax === 960, 'offline step hook + cap exist');
+  // the step wish: with automation 8 h is caught up in 960 steps of 30 s; without automation 200 (unchanged)
+  {
+    let nT = 0; const hk = (st, dt, off) => { if (off) nT++; };
+    E.addTickHook('zz_count', hk);
+    const a = E.deserialize(POST); nT = 0; E.offline(a, 8 * 3600); const withAuto = nT;
+    const b = E.deserialize(POST); b.auto.master = false; nT = 0; E.offline(b, 8 * 3600); const noAuto = nT;
+    const c = E.deserialize(POST); nT = 0; E.offline(c, 1800); const short = nT;
+    E.addTickHook('zz_count', () => {});
+    check(withAuto === 960 && noAuto === 200 && short === 200, 'offline sub-steps: 8 h with automation ' + withAuto + ', without ' + noAuto + ', 30 min ' + short);
+  }
+  // Dream Keeper never ends a run younger than 90 s, even one that starts past the Sleep threshold (Ancestral Lair)
+  {
+    const a = fresh(); a.lore.auto_sleep = 1; a.auto.sleep = true; a.auto.sleepPct = 50; a.legend = 10; a.legendPts = 0; E.dirty();
+    a.run.dkPre = 1; a.earnedRun = 3.1e8; E.dirty(); // a fresh run (as the sleep hook leaves it), past the threshold at once
+    let t = 0; while (a.sleeps === 0 && t < 200) { E.tick(a, 0.5); t += 0.5; }
+    const st = L.autoSleepState(a);
+    check(t >= 89 && t <= 92, 'a run past the threshold within seconds sleeps at 90 s, not at twice its ~0 s warm-up (' + t + ' s, warm ' + st.warm + ')');
+  }
+  // Brood Matron works toward an open Eggs quest only while away
+  {
+    const a = fresh(); a.lore.auto_brood = 1; a.gold = 1e12; a.buildings.digger = 60; a.missions[0] = { uid: 998, tpl: 'tier', key: 0, target: 5000, base: 0, done: false }; E.dirty();
+    tickN(a, 20);
+    const live = a.tiers[0];
+    const b = fresh(); b.lore.auto_brood = 1; b.gold = 1e12; b.buildings.digger = 60; b.missions[0] = { uid: 998, tpl: 'tier', key: 0, target: 5000, base: 0, done: false }; E.dirty();
+    E.offline(b, 1800);
+    check(live < 100 && b.tiers[0] >= 5000, 'Eggs quest: live Brood Matron keeps its small egg reserve (' + Math.round(live) + '), away it buys toward the quest (' + Math.round(b.tiers[0]) + ')');
+  }
+  // without Kobold Foremen nothing gathers (the restart is theirs)
+  const n = E.deserialize(POST); n.auto['n:auto_dig'] = false; n.auto['n:auto_build'] = false;
+  E.offline(n, 3600);
+  check(n.gold === 0 && n.earnedRun === 0, 'Foremen switched off: the empty lair stays empty offline');
+  // the old failure: a run that just reached the threshold offline is not slept at once
+  const q = E.deserialize(POST);
+  const r1 = E.offline(q, 600), first = L.autoSleepState(q);
+  check(q.sleeps === 19 && r1.seconds === 600, 'live save, 10 min away: no Sleep yet (' + (first.can ? 'threshold reached, +' + first.gain : 'below the threshold') + ')');
 }
 
 // ---------------------------------------------------------------- Myth / Ascend / Relics
@@ -299,7 +411,7 @@ function tickN(s, n, dt) { for (let i = 0; i < n; i++) E.tick(s, dt || 0.5); }
 // ---------------------------------------------------------------- with the other engine-side modules loaded
 {
   let H2 = null, err = null;
-  try { H2 = load(['js/events.js', 'js/ember.js']); } catch (e) { err = e; }
+  try { H2 = load(['js/events.js', 'js/ember.js', 'js/sky.js']); } catch (e) { err = e; }
   check(!err && H2 && H2.lore, 'lore loads alongside events.js and ember.js (' + err + ')');
   if (H2) {
     const E2 = H2.engine, L2 = H2.lore, s = E2.newState();

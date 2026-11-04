@@ -44,6 +44,8 @@
     '.lore-node .lore-slider { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 14px; color: var(--ink-dim); }',
     '.lore-node .lore-slider input { flex: 1 1 auto; accent-color: var(--r-epic); height: 32px; touch-action: pan-y; }',
     '.lore-node .lore-slider b { color: var(--ink); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }',
+    '.lore-node .lore-dk { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: var(--ink-dim); overflow-wrap: anywhere; }',
+    '.lore-node .lore-dk b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }',
     '.lore-myth { background: linear-gradient(160deg, #3a2a18 0%, var(--rock) 60%, #1d1927 100%); border-color: rgba(255,224,138,0.3); }',
     '.lore-myth .big-num { color: var(--gold-hi); }',
     '.lore-myth p { margin: 0 0 8px; }',
@@ -143,13 +145,16 @@
       inp.setAttribute('aria-label', 'Sleep when the Legend gain reaches this share of your Legend');
       var val = el('b');
       add(sl, el('span', null, 'when gain ≥'), inp, val);
+      // what the slider means, plus the warm-up rule and what Dream Keeper is waiting for right now
+      dk.help = el('p', 'lore-dk', 'Sleeps once the gain reaches this share of your Legend and the run has lasted twice as long as it took to reach the Sleep threshold (and at least 90 s), so a fresh Myth never ends a run that has only just begun.');
+      dk.now = el('p', 'lore-dk');
       inp.addEventListener('input', function () {
         var s = S(); if (!s) return;
         L.setAuto(s, 'sleepPct', Math.max(50, Math.min(300, Math.round(num(inp.value, 100)))));
         setText(val, L.autoSleepPct(s) + '%');
       });
       dk.sl = sl; dk.inp = inp; dk.val = val;
-      add(c, dk.t.row, sl);
+      add(c, dk.t.row, sl, dk.help, dk.now);
     }
     parts.push(function (s) {
       var l = L.level(s, n.id), cost = L.cost(s, n.id), met = L.reqMet(s, n.id);
@@ -175,14 +180,31 @@
         setHidden(dk.t.row, l < 1); dk.t.patch(s);
         var on = l >= 1 && !!(s.auto && s.auto.sleep === true);
         setHidden(dk.sl, !on);
+        setHidden(dk.help, !on);
+        setHidden(dk.now, !on);
         if (on) {
           var p = L.autoSleepPct(s);
           if (document.activeElement !== dk.inp && String(dk.inp.value) !== String(p)) dk.inp.value = String(p);
           setText(dk.val, p + '%');
+          setText(dk.now, dkNow(s));
         }
       }
     });
     return c;
+  }
+
+  function secs(x) {
+    x = Math.max(0, Math.ceil(num(x)));
+    return HOARD.fmtTime ? HOARD.fmtTime(x) : x + 's';
+  }
+  // one line: what Dream Keeper waits for right now
+  function dkNow(s) {
+    if (typeof L.autoSleepState !== 'function') return '';
+    var k = L.autoSleepState(s);
+    if (!k.can) return 'Now: waiting for this run to reach the Sleep threshold.';
+    if (k.gain < k.need) return 'Now: waiting for +' + fmt(k.need) + ' Legend (a Sleep gives +' + fmt(k.gain) + ').';
+    if (k.run < k.warm) return 'Now: +' + fmt(k.gain) + ' Legend is ready; letting the run grow ' + secs(k.warm - k.run) + ' more.';
+    return 'Now: falling asleep for +' + fmt(k.gain) + ' Legend.';
   }
 
   // ================================================================ sections
@@ -471,13 +493,15 @@
           if (info && (!best || (order[info.rarity] || 0) > (order[best] || 0))) best = info.rarity;
         });
       } else if (nt.kind === 'rank') rank = Math.max(rank, nt.data.rank);
-      else if (nt.kind === 'sleep') { slept++; sg += num(nt.data.gained); }
+      else if (nt.kind === 'sleep') { if (!(welcomedSleeps && nt.data.offline)) { slept++; sg += num(nt.data.gained); } }
       else if (nt.kind === 'autobuy' && nt.data) {
         var id = nt.data.id;
         autoSum.n[id] = num(autoSum.n[id]) + num(nt.data.n);
         autoSum.gold[id] = num(autoSum.gold[id]) + num(nt.data.gold);
       }
     });
+    welcomedSleeps = false;
+    var s0 = S(); if (s0 && s0._dkAway) delete s0._dkAway;   // a short absence (no welcome sheet): the toast told it
     flushAutoBuys(Date.now());
     if (chests) ui.toast('Chest Kobold', 'Opened ' + chests + (chests === 1 ? ' chest: ' : ' chests: ') + cards + ' cards' + (best && best !== 'common' ? ', best ' + best : '') + '.', '');
     if (rank) ui.toast('Old Renown', 'You start this run at Dragon Rank ' + rank + '.', 'gold');
@@ -524,6 +548,18 @@
   }
   if (typeof HOARD.whenReady === 'function') HOARD.whenReady(function () { start(); });
   else setTimeout(start, 0);
+
+  // the welcome-back sheet says what Dream Keeper did while you were away (its toast then skips those Sleeps)
+  var welcomedSleeps = false;
+  if (typeof ui.addWelcomeLine === 'function') ui.addWelcomeLine(function (s) {
+    var aw = s && s._dkAway;
+    if (!aw || typeof aw !== 'object') return null;
+    delete s._dkAway;
+    var n = Math.floor(num(aw.n));
+    if (n < 1) return null;
+    welcomedSleeps = true;
+    return { cls: 'gold', text: 'Dream Keeper took the Long Sleep ' + (n === 1 ? 'once' : n + ' times') + ': +' + fmt(num(aw.gain)) + ' Legend. This run is at Dragon Rank ' + Math.floor(num(s.rank) || 1) + '.' };
+  });
 
   HOARD.uiLore = { showCallout: showCallout, skipCallout: skipCallout, goLore: goLore, estimate: est };
 })();

@@ -468,6 +468,7 @@
       var col = RUSH_COL[lair.id] || RUSH_COL.volcano;
       var txt = lair.short + ' rush \u00d7' + rushX() + ' \u00b7 ' + Math.ceil(num(s.events.rush)) + 's';
       g.save();
+      if (typeof HOARD.cave.hudDim === 'function') g.globalAlpha = HOARD.cave.hudDim();   // a Starfall dims it
       g.font = '700 13px system-ui, -apple-system, "Segoe UI", sans-serif';
       var tw = g.measureText(txt).width, x = 8, y = 58, ph = 22, pw = tw + 18;
       if (x + pw > w - 8) pw = Math.max(40, w - 16);

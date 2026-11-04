@@ -184,7 +184,7 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
 
 // ---------------------------------------------------------------- with every engine-side feature module loaded
 {
-  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'].filter(f => fs.existsSync(path.join(root, f)));
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'].filter(f => fs.existsSync(path.join(root, f)));
   const H = load(mods, disk);
   for (const f of fixtures) {
     const raw = fs.readFileSync(path.join(FIX, f), 'utf8').trim();
@@ -195,7 +195,7 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
 // ---------------------------------------------------------------- the real player's case: a v2 save right after
 // Sleep 1 with Lore greed:1 + halls:1 (written by the pre-feel-pass engine) loads, plays and keeps its Lore
 {
-  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'].filter(f => fs.existsSync(path.join(root, f)));
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'].filter(f => fs.existsSync(path.join(root, f)));
   const H = load(mods, disk), E3 = H.engine;
   const raw = fs.readFileSync(path.join(FIX, 'v1-postsleep.json'), 'utf8');
   const o = JSON.parse(raw);
@@ -219,7 +219,7 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
 // running. It loads, keeps everything, the lair stays live, and a fresh run plays with the new economy.
 {
   const raw = fs.readFileSync(path.join(FIX, 'v2-player-sleep1.json'), 'utf8');
-  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'];
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'];
   const H = load(mods, disk), E4 = H.engine, X = H.events;
   const s = E4.deserialize(raw), o = JSON.parse(JSON.parse(raw).json);
   check(s.v === 2 && s.sleeps === 1 && s.legend === 3 && s.lore.greed === 1 && s.lore.halls === 1, 'player save: Sleep 1, 3 Legend, greed:1 halls:1');
@@ -251,7 +251,7 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
 // and the quests drawn after claiming them are sane.
 {
   const raw = fs.readFileSync(path.join(FIX, 'v2-player-rank5-coins.json'), 'utf8');
-  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'];
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'];
   const H = load(mods, disk), E5 = H.engine, D5 = H.data;
   const o = JSON.parse(raw);
   const s = E5.deserialize(raw);
@@ -284,6 +284,39 @@ for (const g of [null, undefined, '', '   ', '{bad', 'null', '42', 42, [], {}, {
   r1.missionPace = 0.02;
   const r2 = E5.deserialize(E5.serialize(r1)), t2 = r2.missions.filter(m => m.tpl === 'coins').map(m => m.target);
   check(t1.length >= 1 && t1[0] < 940 && JSON.stringify(t1) === JSON.stringify(t2) && r2.missions.every(m => m.tpl !== 'coins' || m.T > 0), 'rank-5 save: an unfinished re-sized coins quest keeps its size on the next load (' + t1.join(',') + ' -> ' + t2.join(',') + ')');
+}
+
+// ---------------------------------------------------------------- the real player's save right after Ascend 1
+// (tools/fixtures/v2-player-post-ascend.json, the cloud doc's inner json, 2026-11-04): Myth 2, Saga Stone I, Legend 10
+// from a Dream Keeper Sleep in offline catch-up, a fresh empty run, Ember awake with every Breath, the Volcano Lair
+// done, Dream Keeper on at 50%. It loads with every module, keeps everything, and round-trips.
+{
+  const raw = fs.readFileSync(path.join(FIX, 'v2-player-post-ascend.json'), 'utf8');
+  const mods = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'];
+  const H = load(mods, disk), E6 = H.engine;
+  const o = JSON.parse(raw), s = E6.deserialize(raw);
+  check(s.v === 2 && s.legend === 10 && s.legendPts === 10 && s.sleeps === 19 && s.myth === 2 && s.mythPts === 1 && s.myths === 1, 'post-Ascend save: Legend 10, 19 Sleeps, Myth 2 (1 to spend), 1 Ascend');
+  check(JSON.stringify(s.cards) === JSON.stringify(o.cards) && JSON.stringify(s.lore) === JSON.stringify(o.lore) && JSON.stringify(s.relics) === JSON.stringify(o.relics), 'post-Ascend save: cards, lore and relics kept exactly');
+  check(s.auto.sleep === true && s.auto.sleepPct === 50 && H.lore.autoSleepOn(s), 'post-Ascend save: Dream Keeper on at 50%');
+  check(s.ember && s.ember.awake === true && Object.keys(s.ember.breaths).length === Object.keys(o.ember.breaths).length && s.ember.kilns.join() === o.ember.kilns.join(), 'post-Ascend save: Ember awake with every Breath and her kilns');
+  check(s.events && s.events.lair === 'volcano' && s.events.q === o.events.q, 'post-Ascend save: Volcano Lair progress kept');
+  check(s.stat.coins === o.stat.coins && s.stat.sleepsGold === o.stat.sleepsGold && s.earnedAll === o.earnedAll, 'post-Ascend save: lifetime stats kept');
+  const back = E6.deserialize(E6.serialize(s));
+  check(back.legend === 10 && back.myth === 2 && JSON.stringify(back.cards) === JSON.stringify(o.cards) && back.ember.awake === true && back.auto.sleepPct === 50, 'post-Ascend save: round trip');
+  check(!finiteDeep(s, 'state') && !finiteDeep(E6.stats(s), 'stats'), 'post-Ascend save: all numbers finite');
+  // Starfall (js/sky.js): the save has no sky subtree; it loads with the defaults and opens on the first tick with the
+  // 2-charge gift, changing nothing else
+  const SKY0 = { on: false, xp: 0, ch: 0, at: 0, n: 0, caught: 0, stars: 0, best: 0, bestPct: 0, capAt: 0, eCaught: 0, lant: 0, lit: 0, gift: false };
+  check(o.sky === undefined && JSON.stringify(s.sky) === JSON.stringify(SKY0), 'post-Ascend save: sky defaults on load ' + JSON.stringify(s.sky));
+  H.sky._now = o.savedAt + 60e3;
+  const t0 = JSON.parse(E6.serialize(s));
+  E6.tick(s, 0.1);
+  check(s.sky.on === true && s.sky.ch === 2 && s.sky.gift === true && H.sky.charges(s) === 2, 'post-Ascend save: the night sky opens on the first tick with 2 Starfalls');
+  check(s.legend === 10 && s.myth === 2 && s.mythPts === 1 && JSON.stringify(s.relics) === JSON.stringify(o.relics) && JSON.stringify(s.cards) === JSON.stringify(o.cards) &&
+    JSON.stringify(s.lore) === JSON.stringify(o.lore) && s.ember.awake === true && s.auto.sleepPct === 50 && t0.ember.kilns.join() === s.ember.kilns.join(), 'post-Ascend save: opening the sky changes nothing else');
+  const back2 = E6.deserialize(E6.serialize(s));
+  check(back2.sky.on === true && back2.sky.ch === 2 && back2.sky.gift === true && back2.legend === 10, 'post-Ascend save: sky round trip');
+  H.sky._now = null;
 }
 
 console.log((fails ? fails + ' FAILURES, ' : '') + passes + ' checks passed');

@@ -157,6 +157,25 @@
     if (typeof name !== 'string' || typeof fn !== 'function') return false;
     upsert(sleepHooks, { name: name, fn: fn }); return true;
   }
+  // fn(state) -> the longest offline sub-step (seconds) the module can live with, or 0 for no wish. offline() then uses
+  // more sub-steps for a long absence (never fewer than C.offlineSteps, at most C.offlineStepsMax). Lore automation
+  // uses it so Dream Keeper and the auto-buyers see a night away in steps of ~30 s instead of ~144 s.
+  var offlineStepHooks = [];
+  function addOfflineStepHook(name, fn) {
+    if (typeof name !== 'string' || typeof fn !== 'function') return false;
+    upsert(offlineStepHooks, { name: name, fn: fn }); return true;
+  }
+  function offlineStepCount(state, seconds) {
+    var steps = Math.max(1, Math.min(C.offlineSteps, Math.ceil(seconds)));
+    var want = 0;
+    for (var i = 0; i < offlineStepHooks.length; i++) {
+      var d = 0;
+      try { d = fin(offlineStepHooks[i].fn(state), 0); } catch (e) { logErr('offlineStep:' + offlineStepHooks[i].name, e); d = 0; }
+      if (d > 0 && (!(want > 0) || d < want)) want = d;
+    }
+    if (want > 0) steps = Math.max(steps, Math.min(fin(C.offlineStepsMax, 960), Math.ceil(seconds / Math.max(1, want))));
+    return steps;
+  }
   var CORE_KEYS = null; // filled after baseState exists
   function addStateDefaults(name, fn, sanitizeFn) {
     if (typeof name !== 'string' || !name || name.charAt(0) === '_' || typeof fn !== 'function') return false;
@@ -1628,7 +1647,7 @@
       res.seconds = seconds;
       pruneEffects(state);
       if (seconds <= 0) return res;
-      var steps = Math.max(1, Math.min(C.offlineSteps, Math.ceil(seconds)));
+      var steps = offlineStepCount(state, seconds);
       var dt = seconds / steps;
       quiet++;
       state._noEffects = true;
@@ -1700,6 +1719,7 @@
     addModSource: addModSource,
     addTickHook: addTickHook,
     addSleepHook: addSleepHook,
+    addOfflineStepHook: addOfflineStepHook,
     addStateDefaults: addStateDefaults,
     registerCards: registerCards,
     flag: flag,
