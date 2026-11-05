@@ -19,13 +19,15 @@ const FIX_PATCH = s => s
   .replace('Math.min(12, Math.max(2, Math.round(T / st.gustCooldown)))', 'Math.min(6, Math.max(2, Math.round(0.5 * T / st.gustCooldown)))');
 const FIX_TWEAK = "D.buildings[1].gps=1; D.buildings[2].gps=6; D.buildings[3].gps=40; D.buildings[4].gps=320; D.buildings[5].gps=3500; D.buildings[5].gold=3e6; D.tiers[4].gold=6e5; var tt=D.missionTemplates.find(t=>t.tpl==='treasures'); tt.weight=0.3; tt.minRank=3;";
 const patch = process.env.PATCH ? eval(process.env.PATCH) : (process.env.FIXES ? FIX_PATCH : null);
-for (const f of ['js/data.js', 'js/engine.js']) {
+// js/mines.js loads too (NOMINES=1: control run without it). The sim player's Mines habits: tools/mines-bot.cjs
+for (const f of ['js/data.js', 'js/engine.js'].concat(process.env.NOMINES ? [] : ['js/mines.js'])) {
   let src = fs.readFileSync(path.join(root, f), 'utf8');
   if (patch && f === 'js/engine.js') { const p2 = patch(src); if (p2 === src) { console.error('PATCH did not change engine.js'); process.exit(2); } src = p2; }
   vm.runInThisContext(src, { filename: f });
 }
 const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C;
 const QB = require('./quest-balance.cjs')(E, D);
+const X = H.mines || null, MB = require('./mines-bot.cjs')(E, X);
 if (process.env.FIXES && !process.env.TWEAK) eval(FIX_TWEAK);
 if (process.env.TWEAK) eval(process.env.TWEAK);
 const HOURS = +process.argv[2] || 3;
@@ -234,13 +236,13 @@ function run(prof) {
       pool += st.spillRate * dt; poolV += st.spillRate * dt;
       if (pool > C.maxCoins) pool = C.maxCoins; // over cap: value merges into existing coins
       const take = Math.min(pool, 4 * dt);
-      if (take > 0) { const avg = poolV / pool; e0 = s.earnedAll; E.coinCollected(s, take, 3, avg); addSrc('coin', s.earnedAll - e0); poolV -= take * avg; pool -= take; }
+      if (take > 0) { const avg = poolV / pool; e0 = s.earnedAll; E.coinCollected(s, take, 3, avg); addSrc('coin', s.earnedAll - e0); poolV -= take * avg; pool -= take; MB.swipe(s, take); }
       e0 = s.earnedAll; E.strokeCollected(s, 600 * dt, 3); addSrc('stroke', s.earnedAll - e0);
       E.noteStreak(s, isInt(R.T / 60) ? st.maxStreak : 3); // an occasional long swipe
       if (E.gustReady(s) && E.useGust(s)) { // gusts whenever ready (collects whatever is on screen)
         const n = Math.floor(pool), avg = n > 0 ? poolV / pool : 0;
         const gv = avg * (1 + (st.gustWorthMult - 1) * Math.min(n, C.gustBonusCoins || n) / Math.max(1, n)); // x3 on <= gustBonusCoins
-        if (n > 0) { e0 = s.earnedAll; E.coinCollected(s, n, 3, gv); addSrc('gust', s.earnedAll - e0); pool -= n; poolV -= n * avg; }
+        if (n > 0) { e0 = s.earnedAll; E.coinCollected(s, n, 3, gv); addSrc('gust', s.earnedAll - e0); pool -= n; poolV -= n * avg; MB.swipe(s, n); }
         const fl = Math.max(0, (C.gustFloorCoins || 0) - n); // engine floor: a gust always pays >= gustFloorCoins coins
         if (fl > 0) { e0 = s.earnedAll; E.coinCollected(s, fl, 3, st.gustWorthMult); addSrc('gust', s.earnedAll - e0); }
       }
@@ -260,9 +262,10 @@ function run(prof) {
     QB.track(R, s, active ? dt : 0);
     R.T += dt;
     if (active && isInt(R.T)) { // ---- player actions, once per second while playing
-      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { const r = QB.claim(R, s, i); if (r.rankUp && M().rankAt[s.rank] == null) M().rankAt[s.rank] = R.T; i = -1; }
+      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { const tp = s.missions[i].tpl, r = QB.claim(R, s, i); if (r.ok) MB.claimed(R, tp); if (r.rankUp && M().rankAt[s.rank] == null) M().rankAt[s.rank] = R.T; i = -1; }
       while (s.chests > 0) E.openChest(s);
       shop(s, prof, R, M());
+      MB.act(s, R.T, R);
       if (E.canSleep(s) && M().sleepAvail == null) M().sleepAvail = R.T;
       const gain = E.legendOnSleep(s);
       if (E.canSleep(s) && gain >= Math.max(3, s.legend) && s.sleeps < MAXSLEEPS) {
@@ -332,6 +335,7 @@ function report(R) {
     console.log('OFFLINE at ' + mm(o.at) + ' for ' + o.sec / 3600 + 'h: +' + f(o.gold) + ' gold (gps ' + f(o.gpsBefore) + ' + sweep ' + f(o.sweepGps) + ' => ' + (o.gold / Math.max(1e-9, o.gpsBefore + o.sweepGps) / 3600).toFixed(2) + ' h of rate; gold before ' + f(o.goldBefore) + ', earnedRun before ' + f(o.earnedBefore) + ', rank ' + o.rank + ')');
     console.log('   tiers ' + o.tiersBefore.map(f).join('/') + ' -> ' + o.tiersAfter.map(f).join('/') + '; buildings ' + o.bBefore + ' -> ' + o.bAfter + '; gps after spending ' + f(o.gpsAfterBuy) + ' (x' + (o.gpsAfterBuy / Math.max(1e-9, o.gpsBefore)).toFixed(1) + ')');
   }
+  if (X) console.log(MB.report(R, s));
   console.log('final: gold ' + f(s.gold) + ', gps ' + f(E.stats(s).baseGps) + ', rank ' + s.rank + ', legend ' + f(s.legend) + ', sleeps ' + s.sleeps + ', cards ' + Object.values(s.cards).reduce((a, b) => a + b, 0));
 }
 

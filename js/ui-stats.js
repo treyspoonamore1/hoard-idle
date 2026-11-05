@@ -68,9 +68,9 @@
 
   var LABELS = {
     legend: 'Legend', rank: 'Dragon Rank', upgrades: 'Lair upgrades', cards: 'Treasure cards',
-    eventcards: 'Event cards', lore: 'Lore', myth: 'Myth', ember: "Ember's warmth", events: 'Event lairs', relics: 'Relics'
+    eventcards: 'Deep cards', lore: 'Lore', myth: 'Myth', mines: 'Mines (Forge glow and Hearth)', relics: 'Relics'
   };
-  var ORDER = ['legend', 'myth', 'ember', 'lore', 'relics', 'cards', 'eventcards', 'upgrades', 'rank'];
+  var ORDER = ['legend', 'myth', 'mines', 'lore', 'relics', 'cards', 'eventcards', 'upgrades', 'rank'];
   function labelOf(name) {
     if (LABELS[name]) return LABELS[name];
     var t = String(name || 'Other').replace(/[_-]+/g, ' ');
@@ -131,7 +131,7 @@
       goldText: '×' + mult(gold), coinText: '×' + mult(coin), minionText: '×' + mult(minion), extra: ex, neutral: neutral };
   }
 
-  // per-source breakdown from E.modBreakdown, with the cards source split into treasure vs event cards
+  // per-source breakdown from E.modBreakdown, with the cards source split into treasure vs Deep cards
   function multipliers(s) {
     var E = HOARD.engine, D = HOARD.data || {};
     var res = { rows: [], total: null, effects: [] };

@@ -1,6 +1,6 @@
 /* Hoard — js/sky.js — Starfall + Growth (SPEC-V2 "Starfall"). Engine-side module, Node-safe: no DOM, no window,
  * no Math.random. Owns state.sky (addStateDefaults), the 'sky' tick hook (unlock, Starfall charges, Ember watching
- * the sky, First Light) and the 'sky' sleep hook (First Light resets on Ascend).
+ * the sky once the Mines are open, First Light) and the 'sky' sleep hook (First Light resets on Ascend).
  * It gives NO gold, Legend or card power: no mod source, no cards, never E.earn, and caught stars pay no gold (the
  * normal coin spill keeps running during a Starfall, so gold is neutral by design). Stardust (sky.xp) only grows the
  * dragon and its Starfalls.
@@ -35,7 +35,7 @@
     { id: 'ancient', name: 'Ancient', xp: 75000, scale: 1.25, perk: 'Every 5th Starfall is Grand' }
   ];
   var SCALE_XP = 25000;                                   // a Star Scale per 25,000 Stardust past Ancient
-  var LANT_COST = [2e6, 1e7, 5e7, 2.5e8, 1.25e9];         // Sky Lanterns, in embers
+  var LANT_COST = [1e5, 1e7, 1e9, 1e11, 1e13];            // Sky Lanterns, in Ore (bought in the Mines tab; x100 a level, review N5)
   var C = {
     unlockRank: 4,
     giftCharges: 2,
@@ -124,7 +124,8 @@
   // welcome-back sheet / a toast. Transient ('_' keys are never saved).
   function away(s) { return isObj(s._skyAway) ? s._skyAway : (s._skyAway = { stage: 0, light: 0, lightDust: 0 }); }
   function quietNow() { try { return typeof E.isQuiet === 'function' && E.isQuiet(); } catch (e) { return false; } }
-  function emberAwake(s) { var X = HOARD.ember; return !!(X && typeof X.isAwake === 'function' && X.isAwake(s)); }
+  // Ember now tends the Forge in her nook; she still watches the sky (and catches stars at the cap) once the Mines are open
+  function emberAwake(s) { var X = HOARD.mines; return !!(X && typeof X.isOpen === 'function' && X.isOpen(s)); }
 
   // ---------------------------------------------------------------- pure readers (null-safe)
   function on(s) { var k = peek(s); return !!(k && k.on === true); }
@@ -290,15 +291,13 @@
       total: total, caught: caught, best: best, rides: rides, cuts: cuts, twins: twins, rank: Math.max(fin(run.rank, 1), fin(s.rank, 1)) };
   }
 
-  // Sky Lanterns: an ember sink with no gold power (Starfall only). Spends embers, never Ember's lifetime 'earned'.
+  // Sky Lanterns: an Ore sink with no gold power (Starfall only). Spends Ore, never lifetime Ore (the Forge glow).
   function buyLantern(s) {
-    var k = peek(s);
-    if (!k || !k.on || !emberAwake(s) || !isObj(s.ember)) return false;
+    var k = peek(s), X = HOARD.mines;
+    if (!k || !k.on || !X || !X.isOpen(s)) return false;
     var lv = Math.min(5, int(k.lant));
     if (lv >= 5) return false;
-    var cost = LANT_COST[lv], have = pos(s.ember.embers);
-    if (!(have + 1e-9 >= cost)) return false;
-    s.ember.embers = pos(have - cost);
+    if (!X.spendOre(s, LANT_COST[lv])) return false;
     k.lant = lv + 1;
     E.dirty();
     emit('sky', { type: 'lantern', lv: k.lant }, s);

@@ -24,51 +24,39 @@
   var START_RANK = [1, 3, 4];   // Old Renown levels; Ancestral Lair also gives RELIC_RANK
   var RELIC_RANK = 5;
   var TALON_RAMP = [1, 1.5, 2, 2.5];
-  var CLAW_IDS = ['claws1', 'claws2', 'claws3', 'claws4', 'scales1', 'scales2', 'scales3'];
-  var BROOM_IDS = ['broom1', 'broom2', 'broom3'];
 
   // costs: fixed list per level, or base * growth^level.  desc(lv) describes the effect AT level lv (lv >= 1).
   var NODES = [
     // ---- Automation (kept through Myth)
-    { id: 'auto_dig', branch: 'auto', name: 'Kobold Foremen', costs: [2], toggle: true,
+    { id: 'auto_dig', branch: 'auto', short: 'Buys Kobold Diggers for you', name: 'Kobold Foremen', costs: [2], toggle: true,
       desc: function () { return 'Buys a Kobold Digger whenever one costs under 10% of your gold. While you are away with an empty lair, they gather spilled coins for the first one.'; } },
-    { id: 'auto_build', branch: 'auto', name: 'Master Builders', costs: [6], req: 'auto_dig', toggle: true,
+    { id: 'auto_build', branch: 'auto', short: 'Buys buildings, best value first', name: 'Master Builders', costs: [6], req: 'auto_dig', toggle: true,
       desc: function () { return 'Buys every unlocked building as gold comes in, best value first. Switch rows off in Lair.'; } },
-    { id: 'auto_brood', branch: 'auto', name: 'Brood Matron', costs: [4], toggle: true,
+    { id: 'auto_brood', branch: 'auto', short: 'Buys minions with half your gold/s', name: 'Brood Matron', costs: [4], toggle: true,
       desc: function () { return 'Buys minions with up to half of your gold/s. Switch tiers off in Brood.'; } },
-    { id: 'auto_quest', branch: 'auto', name: 'Quest Scribe', costs: [2], toggle: true,
+    { id: 'auto_quest', branch: 'auto', short: 'Claims finished quests', name: 'Quest Scribe', costs: [2], toggle: true,
       desc: function () { return 'Claims finished quests for you.'; } },
-    { id: 'auto_chest', branch: 'auto', name: 'Chest Kobold', costs: [2], req: 'auto_quest', toggle: true,
+    { id: 'auto_chest', branch: 'auto', short: 'Opens chests for you', name: 'Chest Kobold', costs: [2], req: 'auto_quest', toggle: true,
       desc: function () { return 'Opens chests for you and tells you what was inside.'; } },
-    { id: 'auto_gust', branch: 'auto', name: 'Restless Wings', costs: [3], toggle: true,
+    { id: 'auto_gust', branch: 'auto', short: 'Fires Wing Gust once charged', name: 'Restless Wings', costs: [3], toggle: true,
       desc: function () { return 'Wing Gust fires by itself once charged and 8 coins are out (or after 10s).'; } },
-    { id: 'auto_upg', branch: 'auto', name: 'Lair Steward', costs: [12], req: 'auto_build', toggle: true,
+    { id: 'auto_upg', branch: 'auto', short: 'Buys Lair upgrades', name: 'Lair Steward', costs: [12], req: 'auto_build', toggle: true,
       desc: function () { return 'Buys Lair upgrades as soon as you can afford them.'; } },
-    { id: 'auto_sleep', branch: 'auto', name: 'Dream Keeper', costs: [30], req: 'auto_upg',
+    { id: 'auto_sleep', branch: 'auto', short: 'Takes the Long Sleep by itself', name: 'Dream Keeper', costs: [30], req: 'auto_upg',
       desc: function () { return 'Optional: take the Long Sleep by itself once the Legend gain is big enough and the run has grown long enough to be worth ending.'; } },
     // ---- Head start (reset by Myth)
     { id: 'start_gold', branch: 'start', name: 'Buried Cache', costs: [1, 4, 15, 60],
       what: 'Starting gold', val: function (lv) { return fmt(START_GOLD[Math.min(4, lv)]); },
       desc: function (lv) { return 'Start each run with ' + fmt(START_GOLD[Math.min(4, lv)]) + ' gold.'; } },
-    { id: 'keep_claws', branch: 'start', name: 'Remembered Claws', costs: [3],
-      desc: function () { return 'Sharper Claws and Golden Scales survive the Long Sleep.'; } },
-    { id: 'keep_broom', branch: 'start', name: 'Loyal Brooms', costs: [3],
-      desc: function () { return 'Kobold Broom Crew upgrades survive the Long Sleep.'; } },
     { id: 'start_rank', branch: 'start', name: 'Old Renown', costs: [5, 40],
       what: 'Starting Dragon Rank', val: function (lv) { return String(START_RANK[Math.min(2, lv)]); },
       desc: function (lv) { return 'Start each run at Dragon Rank ' + START_RANK[Math.min(2, lv)] + '.'; } },
-    { id: 'start_brood', branch: 'start', name: 'Nest Egg', costs: [4, 20],
-      desc: function (lv) { return lv >= 2 ? 'Start with 300 Eggs, 25 Wyrmlings, 12 Drakes and 3 Wyverns.' : 'Start each run with 300 Eggs and 25 Wyrmlings.'; } },
     // ---- Power (reset by Myth; cost growth x4 per level)
-    { id: 'greed', branch: 'power', name: "Dragon's Greed", base: 1, growth: 4, max: 15, per: 0.25,
-      what: 'Coin and stroke worth', val: function (lv) { return x(1 + this.per * lv); },
-      desc: function (lv) { return 'Coins and strokes ' + x(1 + this.per * lv) + '.'; } },
-    { id: 'halls', branch: 'power', name: 'Glittering Halls', base: 2, growth: 4, max: 15, per: 0.25,
-      what: 'Building gold/s', val: function (lv) { return x(1 + this.per * lv); },
-      desc: function (lv) { return 'Building gold/s ' + x(1 + this.per * lv) + '.'; } },
-    { id: 'clutches', branch: 'power', name: 'Fertile Clutches', base: 2, growth: 4, max: 15, per: 0.25,
-      what: 'Minion output', val: function (lv) { return x(1 + this.per * lv); },
-      desc: function (lv) { return 'Minion output ' + x(1 + this.per * lv) + '.'; } },
+    // Dragon's Hunger (id 'greed') merges the old Greed, Glittering Halls and Fertile Clutches into one node
+    // base 6 (SPEC-MINES A3 said 5): the last step of the B12 tuning order, so the Mines keep the first Ascend >= 2 h
+    { id: 'greed', branch: 'power', name: "Dragon's Hunger", base: 6, growth: 4, max: 15, per: 0.25,
+      what: 'Coins, building gold/s and minions', val: function (lv) { return x(1 + this.per * lv); },
+      desc: function (lv) { return 'Coins, strokes, building gold/s and minion output ' + x(1 + this.per * lv) + '.'; } },
     { id: 'talons', branch: 'power', name: 'Steady Talons', base: 3, growth: 4, max: 3,
       what: 'Streak speed', val: function (lv) { return x(TALON_RAMP[Math.min(3, lv)]); },
       desc: function (lv) { return 'Streaks build ' + x(TALON_RAMP[Math.min(3, lv)]) + ' faster; ×8 streaks always open.'; } },
@@ -83,12 +71,10 @@
       what: 'Away time', val: function (lv) { return (8 + 4 * lv) + 'h'; },
       what2: 'Gold while away', val2: function (lv) { return x(Math.pow(1.15, lv)); },
       desc: function (lv) { return 'Away time counts up to ' + (8 + 4 * lv) + 'h; gold while away ' + x(Math.pow(1.15, lv)) + '.'; } },
-    { id: 'bargain', branch: 'power', name: 'Kobold Haggling', base: 4, growth: 4, max: 5,
-      what: 'Building and minion gold cost', val: function (lv) { return lv ? '-' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '%' : 'full price'; },
-      desc: function (lv) { return 'Buildings and minions cost ' + Math.round(100 - 100 * Math.pow(0.9, lv)) + '% less gold.'; } },
-    // ---- Unlocks (kept through Myth: Ember stays awake, the Myth gate stays open)
-    { id: 'wake_ember', branch: 'unlock', name: 'Wake Ember', costs: [12],
-      desc: function () { return 'A second dragon whose kilns warm all your gold.'; } },
+    // ---- Unlocks (kept through Myth: the Mines stay open, the Myth gate stays open)
+    // 'wake_ember' keeps its old id (and the Legend the player paid for it): it now opens the Mines early
+    { id: 'wake_ember', branch: 'unlock', name: 'Call the Deep', costs: [12],
+      desc: function () { return 'Open the Mines now, without waiting for Dragon Rank 7.'; } },
     { id: 'myth_gate', branch: 'unlock', name: 'The First Myth', costs: [40],
       desc: function () { return 'Unlocks Ascend: once you earn ' + fmt(MYTH.minLegend) + ' Legend in one Myth, trade it for Myth and Relics.'; } }
   ];
@@ -102,8 +88,8 @@
       desc: function () { return 'Keep a quarter of your Power lore levels through each Ascend.'; } },
     { id: 'r_cards', name: 'Gilded Chests', costs: [2],
       desc: function () { return 'Every chest holds one more card.'; } },
-    { id: 'r_ember', name: "Ember's Brood", costs: [2],
-      desc: function () { return 'Ember grows ×3 faster.'; } },
+    { id: 'r_ember', name: 'Deep Veins', costs: [2],
+      desc: function () { return 'Miners dig ×3.'; } },
     { id: 'r_time', name: 'Timeless Sleep', costs: [4],
       desc: function () { return 'Away time counts 12h longer, and gold while away ×2.'; } }
   ];
@@ -117,6 +103,31 @@
   var NIDX = {}, RIDX = {};
   NODES.forEach(function (n) { n.max = n.costs ? n.costs.length : n.max; NIDX[n.id] = n; });
   RELICS.forEach(function (r) { r.max = r.costs.length; RIDX[r.id] = r; });
+
+  // ================================================================ one-time Lore trim (SPEC-MINES A3/A4), on load
+  // Dragon's Hunger (greed) takes the highest of the old greed / halls / clutches levels, so no effect ever drops;
+  // the cut nodes (Kobold Haggling, Remembered Claws, Loyal Brooms, Nest Egg) refund every Legend paid for them.
+  var CUT_REFUND = { keep_claws: [3], keep_broom: [3], start_brood: [4, 20] };
+  function trimLore(raw, o) {
+    if (isObj(o.flags) && fin(o.flags.loreTrim1, 0) >= 1) return;
+    if (!isObj(o.flags)) o.flags = {};
+    var Lr = isObj(o.lore) ? o.lore : (o.lore = {});
+    function l(id) { return Math.max(0, Math.floor(fin(Lr[id], 0))); }
+    var refund = 0, hunger = Math.max(l('greed'), l('halls'), l('clutches'));
+    if (hunger > 0) Lr.greed = Math.min(NIDX.greed.max, hunger);
+    delete Lr.halls; delete Lr.clutches;
+    for (var i = 0, b = Math.min(5, l('bargain')); i < b; i++) refund += Math.ceil(4 * Math.pow(4, i) - 1e-9);
+    delete Lr.bargain;
+    for (var id in CUT_REFUND) {
+      var n = Math.min(CUT_REFUND[id].length, l(id));
+      for (var j = 0; j < n; j++) refund += CUT_REFUND[id][j];
+      delete Lr[id];
+    }
+    if (refund > 0) o.legendPts = cl(pos(o.legendPts) + refund);
+    o.flags.loreTrim1 = 1;
+    if (refund > 0 || hunger > 0) o._loreTrim = { refund: refund, hunger: hunger };   // not saved
+  }
+  if (typeof E.addLoadHook === 'function') E.addLoadHook('lore-trim', trimLore);
 
   // ================================================================ levels, costs, buying
   function lv(s, id) { return (s && isObj(s.lore)) ? Math.max(0, Math.floor(fin(s.lore[id], 0))) : 0; }
@@ -139,7 +150,6 @@
     if (c === null || !E.spend(s, 'legendPts', c)) return false;
     var nl = lv(s, id) + 1;
     s.lore[id] = nl;
-    if (id === 'wake_ember') s.lore.wake_ember = 1;
     applyNow(s, id, nl);
     E.dirty();
     E.emit('lore', { id: id, level: nl }, s);
@@ -178,14 +188,15 @@
     function g(id) { return Math.max(0, Math.floor(fin(L[id], 0))); }
     var v;
     // stroke worth is 0.25 x coin worth, so coinMult already lifts strokes by the same factor (no strokeMult, or it would square)
-    if ((v = g('greed'))) M.coinMult *= 1 + NIDX.greed.per * v;
-    if ((v = g('halls'))) M.gpsMult *= 1 + NIDX.halls.per * v;
-    if ((v = g('clutches'))) for (var t = 1; t < 5; t++) M.tierMult[t] *= 1 + NIDX.clutches.per * v;
+    if ((v = g('greed'))) {
+      var hu = 1 + NIDX.greed.per * v;
+      M.coinMult *= hu; M.gpsMult *= hu;
+      for (var t = 1; t < 5; t++) M.tierMult[t] *= hu;
+    }
     if ((v = g('talons'))) { M.streakHigh = true; M.streakRamp *= TALON_RAMP[Math.min(3, v)]; }
     if ((v = g('magpie'))) { M.treasureFreq *= 1 + 0.25 * v; M.frenzyDurAdd += 8 * v; }
     if ((v = g('dreams'))) M.legendGainMult *= 1 + 0.2 * v;
     if ((v = g('watch'))) { M.offlineCapAddH += 4 * v; M.offlineMult *= Math.pow(1.15, v); }
-    if ((v = g('bargain'))) { var f = Math.pow(0.9, v); M.costMultBuilding *= f; M.costMultTier *= f; }
   });
   E.addModSource('myth', function (s, M) {
     var m = Math.max(0, fin(s.myth, 0));
@@ -208,35 +219,23 @@
     if (rlv(s, 'r_start') >= 1) r = Math.max(r, RELIC_RANK);
     return r;
   }
-  function seedBrood(s) {
-    var l = lv(s, 'start_brood');
-    if (l < 1) return;
-    var want = l >= 2 ? [300, 25, 12, 3, 0] : [300, 25, 0, 0, 0];
-    for (var i = 0; i < 5; i++) if (want[i] > 0) s.tiers[i] = cl(Math.max(pos(s.tiers[i]), want[i]));
-  }
   function seedBuildings(s) {
     if (rlv(s, 'r_start') < 1) return;
     D.buildings.forEach(function (b) {
       if (s.rank >= b.rank) s.buildings[b.id] = Math.max(Math.floor(pos(s.buildings[b.id])), 10);
     });
   }
-  function seedRun(s, prev) {
-    var L = s.lore;
-    var up = (prev && isObj(prev.upgrades)) ? prev.upgrades : {};
-    if (lv(s, 'keep_claws')) CLAW_IDS.forEach(function (id) { if (up[id] === true) s.upgrades[id] = true; });
-    if (lv(s, 'keep_broom')) BROOM_IDS.forEach(function (id) { if (up[id] === true) s.upgrades[id] = true; });
+  function seedRun(s) {
     var sg = startGoldFor(s);
     if (sg > 0) s.gold = cl(Math.max(pos(s.gold), sg));
     var r = startRankFor(s);
     if (r > s.rank) s.rank = r;
-    seedBrood(s);
     seedBuildings(s);
-    void L;
   }
   // a head start bought early in a run applies at once (otherwise it waits for the next run)
   function youngRun(s) { return pos(s.run && s.run.playActive) < 300 || pos(s.earnedRun) < 2 * startGoldFor(s); }
   function applyNow(s, id) {
-    if (!youngRun(s) && id !== 'keep_claws' && id !== 'keep_broom') return;
+    if (!youngRun(s)) return;
     if (id === 'start_gold') {
       var sg = startGoldFor(s);
       if (pos(s.gold) < sg) s.gold = sg;
@@ -244,10 +243,10 @@
       var r = startRankFor(s);
       if (r > s.rank) { s.rank = r; s.rankProgress = 0; note('rank', { rank: r }); }
       seedBuildings(s);
-    } else if (id === 'start_brood') seedBrood(s);
+    }
   }
-  E.addSleepHook('lore', function (s, prev) {
-    seedRun(s, prev);
+  E.addSleepHook('lore', function (s) {
+    seedRun(s);
     if (isObj(s.run)) s.run.dkPre = 1; // a fresh run starts below the Sleep threshold (Dream Keeper's warm-up clock)
   });
 

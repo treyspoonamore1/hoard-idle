@@ -1,0 +1,77 @@
+{
+  "_note": "Pre-trim stats (SPEC-MINES A0.5): measured before Ember/event lairs/Lore trims were removed, with data, engine, lore, events, ember and sky loaded and HOARD.events._now = 2026-11-05 12:00 UTC. save-compat asserts the trimmed game keeps gold/s and coin worth >= 0.995 x these.",
+  "fixtures": {
+    "v1-fresh.json": {
+      "gps": 0,
+      "coinWorth": 1,
+      "strokeWorth": 0.25,
+      "legendPts": 0,
+      "warmth": 1,
+      "emberRate": 0,
+      "rank": 1
+    },
+    "v1-postsleep.json": {
+      "gps": 698.2746015702913,
+      "coinWorth": 23.465272201037916,
+      "strokeWorth": 14.665795125648698,
+      "legendPts": 3,
+      "warmth": 1,
+      "emberRate": 0,
+      "rank": 3
+    },
+    "v1-rank4.json": {
+      "gps": 882.8350074757227,
+      "coinWorth": 4.84596568807676,
+      "strokeWorth": 1.8172371330287849,
+      "legendPts": 0,
+      "warmth": 1,
+      "emberRate": 0,
+      "rank": 4
+    },
+    "v1-sleepready.json": {
+      "gps": 10588.173641344405,
+      "coinWorth": 264.54430678010993,
+      "strokeWorth": 165.34019173756872,
+      "legendPts": 0,
+      "warmth": 1,
+      "emberRate": 0,
+      "rank": 6
+    },
+    "v2-player-myth4.json": {
+      "gps": 24987354.593338117,
+      "coinWorth": 3876225.7351298714,
+      "strokeWorth": 11628677.205389615,
+      "legendPts": 32,
+      "warmth": 6.937807698109116,
+      "emberRate": 4658.4,
+      "rank": 3
+    },
+    "v2-player-post-ascend.json": {
+      "gps": 0,
+      "coinWorth": 158.62454646857404,
+      "strokeWorth": 396.5613661714351,
+      "legendPts": 10,
+      "warmth": 6.75285425579285,
+      "emberRate": 4300.8,
+      "rank": 1
+    },
+    "v2-player-rank5-coins.json": {
+      "gps": 274756225601.29593,
+      "coinWorth": 38508797415.59417,
+      "strokeWorth": 86644794185.08688,
+      "legendPts": 1334,
+      "warmth": 4.312705257917168,
+      "emberRate": 6331.2,
+      "rank": 5
+    },
+    "v2-player-sleep1.json": {
+      "gps": 0,
+      "coinWorth": 3.2703124999999997,
+      "strokeWorth": 1.6351562499999999,
+      "legendPts": 0,
+      "warmth": 1,
+      "emberRate": 0,
+      "rank": 1
+    }
+  }
+}

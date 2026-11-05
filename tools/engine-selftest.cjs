@@ -49,8 +49,19 @@ for (const g of [null, undefined, '', '{bad', 42, [], { gold: 'x', tiers: 'no', 
   const rt = E.deserialize(E.serialize(Object.assign(s, { _caveActive: true })));
   check(rt._caveActive === undefined && rt.missions.length === 3, 'serialize omits _ keys');
   check(E.nextMilestone('building', 0) === 10 && E.nextMilestone('building', 10) === 25 && E.nextMilestone('building', 200) === 300 && E.nextMilestone('tier', 1000) === null, 'nextMilestone');
-  // Ember kilns keep the old 25 / 50 / 100 / 150 / 200 curve (no x2 at 10)
-  check(E.milestoneMult('kiln', 10) === 1 && E.milestoneMult('kiln', 25) === 2 && E.milestoneMult('kiln', 300) === 64 && E.milestoneMult('building', 10) === 2 && E.nextMilestone('kiln', 0) === 25 && E.nextMilestone('kiln', 200) === 300, 'kiln milestones');
+  check(E.milestoneMult('building', 10) === 2 && E.milestoneMult('building', 300) === 128, 'building milestone multipliers');
+  // load hooks: run at the end of every sanitize with (raw, o); a flag in o.flags keeps a conversion one-time;
+  // a throwing hook is contained (the save still loads)
+  let calls = 0, seen = null;
+  check(E.addLoadHook('selftest', function (raw, o) { calls++; seen = raw.legacyThing; if (!o.flags.selftestConv) { o.gold += 5; o.flags.selftestConv = 1; } }), 'addLoadHook registers');
+  E.addLoadHook('selftest-throws', function () { throw new Error('boom'); });
+  const raw0 = JSON.parse(E.serialize(E.newState())); raw0.legacyThing = 7; raw0.gold = 1;
+  const l1 = E.deserialize(JSON.stringify(raw0));
+  check(calls === 1 && seen === 7 && l1.gold === 6 && l1.flags.selftestConv === 1 && l1.legacyThing === 7 && l1.missions.length === 3, 'load hook converts once and sees the raw save');
+  const l2 = E.deserialize(E.serialize(l1));
+  check(calls === 2 && l2.gold === 6, 'load hook: a second load does not convert again');
+  E.addLoadHook('selftest', function () {}); E.addLoadHook('selftest-throws', function () {});
+  check(!E.addLoadHook('x', null) && !E.addLoadHook(3, function () {}), 'addLoadHook rejects bad input');
 }
 // quests (rank-gate review 2026-11): (a) never two activity quests (coins/gusts/treasures/streak) in the 3 slots;
 // (b) an activity quest's expected play time stays within 2x of what a gold quest takes this player at that rank

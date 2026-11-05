@@ -201,7 +201,7 @@
     hoard: svg('<path d="M7 4h10l4 5-9 11L3 9z"/><path d="M3 9h18M9.5 4L12 9l2.5-5M12 9v11"/>'),
     legend: svg('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
     moon: svg('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
-    ember: svg('<path d="M12 21c-4 0-6.5-2.7-6.5-6.2 0-3.6 2.6-5.6 3.6-8.8 1.7 1.4 2.4 3 2.4 4.6 1-.7 1.7-2 1.8-3.6 2.6 2 4.2 4.7 4.2 7.8 0 3.5-2.6 6.2-5.5 6.2z"/><path d="M12 21c-1.6 0-2.7-1.1-2.7-2.6 0-1.7 1.4-2.6 2-4 1.6 1 3.3 2.3 3.3 4 0 1.5-1.1 2.6-2.6 2.6z"/>'),
+    pick: svg('<path d="M3.5 9.5C7 5.5 13 4 20.5 6.5C15.5 6 11 7 7.5 10.5z"/><path d="M13.2 7.6L5 20.5"/>'),
     flame: svg('<path d="M12 21c-4 0-6.5-2.7-6.5-6.2 0-3.6 2.6-5.6 3.6-8.8 1.7 1.4 2.4 3 2.4 4.6 1-.7 1.7-2 1.8-3.6 2.6 2 4.2 4.7 4.2 7.8 0 3.5-2.6 6.2-5.5 6.2z"/>'),
     gear: svg('<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'),
     chest: svg('<path d="M3 10c0-3.5 2.5-5.5 9-5.5s9 2 9 5.5v10H3z"/><path d="M3 11h18M10 11v3h4v-3"/>'),
@@ -359,9 +359,19 @@
   // ---------------------------------------------------------------- sheets / modals
   // o: { center, dismissable (default true), onClose (dismissed / closed normally), onAbort (replaced or closed silently),
   //      patch(state, stats) (called <= 5x/s while open), cls (extra class on .sheet), full (near full-height sheet) }
+  // play log (js/log.js): which tabs and sheets the player opens (SPEC-MINES B9)
+  function logUi(k, d) { try { if (HOARD.log && typeof HOARD.log.event === 'function') HOARD.log.event(k, d); } catch (e) { /* ignore */ } }
+  function sheetId(node, o) {
+    if (o.id) return String(o.id).slice(0, 32);
+    if (o.cls) return String(o.cls).slice(0, 32);
+    var h = null;
+    try { h = node.querySelector ? node.querySelector('h3, h2') : null; } catch (e) { h = null; }
+    return h && h.textContent ? h.textContent.trim().slice(0, 32) : 'sheet';
+  }
   function openSheet(node, o) {
     o = o || {};
     closeSheet(true);
+    logUi('sheet', { id: sheetId(node, o) });
     var ov = $.overlay;
     if (!ov) return;
     ov.innerHTML = '';
@@ -483,7 +493,9 @@
         $.chipLegend._n = LO && typeof LO.affordableCount === 'function' ? num(LO.affordableCount(state)) : 0;
       }
       // short (the chip row is one line at 360px): the spendable Legend when Lore is affordable, else the bonus
-      setText($.chipLegend, $.chipLegend._n > 0 ? fmt(lp) + ' Legend to spend' : 'Legend ×' + multStr(st.legendMult));
+      // narrow phones (360 px) drop "to spend": the purple "spend" glow says it, and Nest + Legend + Auto then fit
+      var narrow = typeof window !== 'undefined' && window.innerWidth < 400;
+      setText($.chipLegend, $.chipLegend._n > 0 ? fmt(lp) + (narrow ? ' Legend' : ' Legend to spend') : 'Legend ×' + multStr(st.legendMult));
       setCls($.chipLegend, 'spend', $.chipLegend._n > 0);
     }
     // gust ring
@@ -574,7 +586,7 @@
 
   // ================================================================ NEST BONUS
   // The brood boosts the hoard: all building gold/s x warmth(nest), nest = brood size counted in Eggs. Player-facing
-  // name: "Nest bonus" (Ember already has its own "warmth").
+  // name: "Nest bonus" (the Mines have their own "glow").
   var NEST_SEC = 300; // brood previews look this far ahead ("+1.2K gold/s within 5 min")
   function nestOn(state) { return E.isUnlocked(state, 'tier', 1) || num(state.tiers && state.tiers[0]) > 0; }
   // the first 10x step of the nest above `nest` whose bonus is at least `min` (so a goal never promises "x1")
@@ -844,7 +856,7 @@
     });
     return { root: root, patch: function (s, st) { for (var i = 0; i < parts.length; i++) parts[i](s, st); } };
   }
-  // what a tier is spent on: the buildings that cost it, and the next tier up ("Pays for Gold Mines and Drakes")
+  // what a tier is spent on: the buildings that cost it, and the next tier up ("Pays for Gold Veins and Drakes")
   function tierUses(i) {
     var out = [];
     D.buildings.forEach(function (b) { if (b.minionTier === i) out.push(b.name); });
@@ -872,7 +884,8 @@
     D.buildings.forEach(function (b) { if (b.rank === nr) out.push(b.name); });
     D.tiers.forEach(function (t, i) { if (i + 1 === nr) out.push(t.name); });
     if (out.length) return 'Next rank unlocks ' + out.join(' and ') + ', plus a bonus chest.' + sky;
-    if (nr > D.C.rankGpsAfter) return 'Next rank: +5% gold/s and a bonus chest.' + sky;
+    var M = HOARD.mines, mc = M && M.C ? M.C.openRank : 7;
+    if (nr === mc && M && state && !M.isOpen(state)) return 'Next rank opens the Mines, plus a bonus chest.' + sky;
     return 'Next rank: a bonus chest.' + sky;
   }
   function buildQuests(state) {
@@ -1088,7 +1101,8 @@
       b.type = 'button';
       b.addEventListener('click', function () { cardSheet(cd.id); });
       if (!has) {
-        add(b, el('div', 't-rar', rarityName(cd.rarity)), el('div', 't-name', '???'));
+        // Deep cards only drop from the Mines' Deep Chests: say so on the tile (code review #3)
+        add(b, el('div', 't-rar', rarityName(cd.rarity)), el('div', 't-name', cd.deep ? '??? · Deep' : '???'));
       } else {
         var lvl = el('div', 't-lvl num');
         var bb = bar();
@@ -1135,7 +1149,8 @@
     box.appendChild(rar);
     if (info.copies < 1) {
       add(box, el('h3', null, 'Undiscovered'),
-        el('p', 'muted', 'This treasure has not turned up yet. Claim quests for chests and keep looking.'));
+        el('p', 'muted', d && d.deep ? 'A Deep card: found only in Deep Chests, one for every ×10 Ore dug in the Mines.'
+          : 'This treasure has not turned up yet. Claim quests for chests and keep looking.'));
     } else {
       add(box, el('h3', null, info.name));
       if (d && d.flavor) box.appendChild(el('p', 'flavor', d.flavor));
@@ -1168,7 +1183,7 @@
     var c = el('div', 'card');
     add(c,
       el('p', null, 'Curl up on your hoard and sleep for an age. You wake small again, but the tale of your hoard spreads. Every point of Legend adds +10% to gold/s, coin worth and brood output, for good.'),
-      el('p', 'sub', 'Legend is also spent on Lore. You keep Lore, treasure cards, chests and Ember, and get one bonus chest. Gold, brood, buildings, upgrades and Dragon Rank start over.'));
+      el('p', 'sub', 'Legend is also spent on Lore. You keep Lore, treasure cards, chests and the Mines, and get one bonus chest. Gold, brood, buildings, upgrades and Dragon Rank start over.'));
     var pb = bar();
     var pl = el('div', 'bar-label');
     var plL = el('span'), plR = el('span');
@@ -1415,12 +1430,6 @@
     box.appendChild(br);
     openSheet(box, { center: true });
   }
-  function keptUpgText(s) {
-    var L0 = s && s.lore ? s.lore : {};
-    var a = num(L0.keep_claws) > 0, b = num(L0.keep_broom) > 0;
-    if (!a && !b) return '';
-    return ' (except ' + (a && b ? 'Claws, Scales and Brooms' : a ? 'Claws and Scales' : 'Brooms') + ', which your Lore keeps)';
-  }
   function sleepSheet() {
     var s = S();
     if (!s || !E.canSleep(s)) return;
@@ -1429,7 +1438,8 @@
     add(box,
       el('h3', null, 'Begin the Long Sleep?'),
       el('p', null, 'You wake with +' + fmt(g) + ' Legend to spend on Lore, and all gold ×' + multStr(1 + 0.1 * (num(s.legend) + g)) + '.'),
-      el('p', 'muted', 'Gold, brood, buildings, upgrades' + (keptUpgText(s)) + ' and Dragon Rank reset. Lore, cards, chests and Ember stay, and you get a bonus chest.'));
+      el('p', 'muted', 'Gold, brood, buildings, upgrades and Dragon Rank reset. Lore, cards, chests and the Mines stay' +
+        (HOARD.mines && HOARD.mines.isOpen(s) ? ' (your leftover Eggs recruit miners)' : '') + ', and you get a bonus chest.'));
     var br = el('div', 'btn-row');
     add(br,
       button('ghost', 'Stay awake', function () { closeSheet(); }),
@@ -1494,6 +1504,7 @@
     if (!t || (s && !tabVisible(t, s))) return;
     stopHold();
     if (tab !== name) {
+      if (inited && tab) logUi('tab', { id: name });
       tab = name;
       view = null;
       if ($.panel) $.panel.scrollTop = 0;
@@ -1615,13 +1626,20 @@
     }
     var ovf = $.chips.scrollWidth > $.chips.clientWidth + 1;
     if ($.chips._ovf !== ovf) { $.chips._ovf = ovf; setCls($.chips, 'ovf', ovf); }
+    // while a streak / Frenzy / Ember chip shows (mid-swipe) and the row overflows, drop the least urgent chips for a
+    // while: step 1 hides the Auto chip, step 2 also the gold/s trend (playtest review M3: "Au" at 360 px). Steps only
+    // go up while the transient chip shows, so nothing flickers, and reset when it goes.
+    var transient = ($.chipStreak && !$.chipStreak.hidden) || ($.chipFrenzy && !$.chipFrenzy.hidden) || ($.chipEmber && !$.chipEmber.hidden);
+    var tight = transient ? ($.chips._tight || 0) : 0;
+    if (transient && ovf && tight < 2) tight++;
+    if ($.chips._tight !== tight) { $.chips._tight = tight; setCls($.chips, 'tight1', tight >= 1); setCls($.chips, 'tight2', tight >= 2); }
     for (var i = 0; i < chipDefs.length; i++) {
       var c = chipDefs[i];
       if (!c._el) continue;
       var vis = !c.visible || !!safe('chip.visible:' + c.id, c.visible, [state, st], false);
       setHidden(c._el, !vis);
-      // front(state): while true the chip sits right after gold/s, before the built-in chips (an event lair's swipe
-      // rush is only on while the player swipes, exactly when the streak chip would push it off a phone screen)
+      // front(state): while true the chip sits right after gold/s, before the built-in chips (for a chip that only
+      // matters mid-swipe, exactly when the streak chip would push it off a phone screen)
       var fr = vis && typeof c.front === 'function' && !!safe('chip.front:' + c.id, c.front, [state, st], false);
       if (fr !== c._front) {
         c._front = fr;
@@ -1718,8 +1736,13 @@
     var sec = num(res.seconds);
     if (sec < 60) return;
     var box = el('div');
+    var s = S();
+    var capH = 8;
+    try { capH = num(E.stats(s).offlineCapHours, 8); } catch (e) { capH = 8; }
+    // away longer than the cap: say which part counted (playtest review N8: "away 11h 43m" read as 11h of gold)
+    var over = sec > capH * 3600 + 59;
     add(box, el('h3', null, 'While you slept…'),
-      el('p', 'muted', 'You were away for ' + fmtTime(sec) + '. The kobolds kept digging.'),
+      el('p', 'muted', 'You were away for ' + fmtTime(sec) + (over ? ' (the first ' + capH + 'h counted)' : '') + '. The kobolds kept digging.'),
       el('div', 'welcome-gold', '+' + fmt(res.gold)),
       el('p', 'sub', 'gold added to your hoard'));
     var m = res.minions || [];
@@ -1735,9 +1758,6 @@
       }
     }
     if (any) box.appendChild(list);
-    var s = S();
-    var capH = 8;
-    try { capH = num(E.stats(s).offlineCapHours, 8); } catch (e) { capH = 8; }
     if (sec >= capH * 3600 - 1) box.appendChild(el('p', 'muted', 'Your hoard can only grow for ' + capH + 'h while you are away.'));
     // extra lines from feature modules (ui.addWelcomeLine): Dream Keeper's Sleeps, the night sky, ...
     for (var wl = 0; wl < welcomeLines.length; wl++) {

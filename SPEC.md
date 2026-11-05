@@ -86,7 +86,7 @@ gold cost = base × 1.15^owned; minion cost = ceil(base × 1.10^owned).
 | moon | Gold Moons | 9,000,000 | 2 Elder Dragons | 7,000 | 6 |
 
 Minion tier i unlocks at rank i+1 (Eggs at rank 1, Wyrmlings rank 2, …, Elders rank 5).
-Building milestones: owning 25 / 50 / 100 / 150 / 200 / 300 / 400 … (every 100 after 200) each doubles that building. (Feel pass: now 10 / 25 / 50 / 100 / 150 / 200 / 300 …, and Nest warmth multiplies building gold/s; see EXTENSIONS.md. Ember kilns keep 25 / 50 / 100 / 150 / 200.)
+Building milestones: owning 25 / 50 / 100 / 150 / 200 / 300 / 400 … (every 100 after 200) each doubles that building. (Feel pass: now 10 / 25 / 50 / 100 / 150 / 200 / 300 …, and Nest warmth multiplies building gold/s; see EXTENSIONS.md. Ember's kilns, which kept 25 / 50 / 100 / 150 / 200, became the Mines' Pick Crews: SPEC-MINES.md.)
 
 ### Lair upgrades (one-time gold purchases; ~14; shown when affordable-ish: cost ≤ 3× current gold or already near unlock; hide bought ones)
 Must include at least:

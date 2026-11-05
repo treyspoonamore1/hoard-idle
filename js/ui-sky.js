@@ -1,6 +1,6 @@
 /* Hoard — js/ui-sky.js — Starfall + Growth, the UI side (SPEC-V2 "Starfall"): the cave launcher (one deliberate
  * press), the Starfall itself (a cave layer of falling stars and comets caught by swiping), the score sheet, the
- * Night Sky section in the Hoard tab, Sky Lanterns in the Ember tab, the dragon's growth (size + decorations) and
+ * Night Sky section in the Hoard tab, Sky Lanterns in the Mines tab, the dragon's growth (size + decorations) and
  * toasts/log/sound. Loaded after ui.js, before main.js. Engine-side rules live in js/sky.js.
  * Gold: none. Caught stars pay Stardust only and the normal coin spill keeps running while stars fall, so a Starfall
  * is gold-neutral by design (the same swipes still sweep coins). Toasts other than the sky's own wait until it ends. */
@@ -66,7 +66,6 @@
     '.sky-up { margin: 10px 0 0; padding: 8px 10px; border-radius: var(--radius); border: 1px solid rgba(242, 184, 75, 0.45); background: rgba(242, 184, 75, 0.08); color: var(--gold-hi); font-weight: 700; font-size: 15px; line-height: 1.3; }',
     '.sky-lant .name { font-size: 16px; }',
     '.sky-lant .btn { min-width: 104px; }',
-    '.sky-lant .c-emb { color: #ffb27a; font-weight: 700; }',
     '.sky-lant .short { color: var(--ink-faint); }',
     '.sky-lant.done { text-align: center; color: ' + INK + '; font-weight: 700; }'
   ].join('\n'), 'sky');
@@ -259,7 +258,7 @@
     if (cv.setHudDim) cv.setHudDim(0.3);
     ui.holdToasts(holdToast);
     log('starfall_start', { ch: ch, stage: st + 1 });
-    snd('eventStart');
+    snd('skyStart');
     ui.buzz(12);
     patchLauncher();
     ui.markDirty();
@@ -744,37 +743,38 @@
     }
   });
 
-  // ================================================================ Ember tab: Sky Lanterns (an ember sink, Starfall only)
+  // ================================================================ Mines tab: Sky Lanterns (an Ore sink, Starfall only)
   function lantLine(lv) {
     return 'Lv ' + lv + '/5 · Stardust +' + Math.round(8 * lv) + '% · stars fall ' + (3 * lv) + '% slower';
   }
-  ui.addSection('ember', {
+  function minesOpen(s) { return !!(HOARD.mines && HOARD.mines.isOpen(s)); }
+  ui.addSection('mines', {
     id: 'lanterns', order: 80,
-    visible: function (s) { return X.on(s) && !!(HOARD.ember && HOARD.ember.isAwake(s)); },
+    visible: function (s) { return X.on(s) && minesOpen(s); },
     key: function (s) { return 'L' + ((s.sky && s.sky.lant) || 0); },
     build: function (host, s0) {
-      host.classList.add('emb');
+      host.classList.add('mn');
       var lv0 = (s0.sky && s0.sky.lant) || 0;
       host.appendChild(ui.secHead('Sky Lanterns'));
-      host.appendChild(el('p', 'hint', lv0 > 0 ? lantLine(lv0) + '.' : 'Paper lanterns over the lair, lit with embers. Each one: Starfalls give +8% Stardust and stars fall 3% slower.'));
+      host.appendChild(el('p', 'hint', lv0 > 0 ? lantLine(lv0) + '.' : 'Paper lanterns over the lair, lit with Ore. Each one: Starfalls give +8% Stardust and stars fall 3% slower.'));
       if (lv0 >= 5) { host.appendChild(el('div', 'card sky-lant done', 'All lanterns lit')); return null; }
       var c = el('div', 'card sky-lant');
       var r = el('div', 'row');
       var g = el('div', 'grow');
       var cost = el('div', 'cost');
-      var cv = el('span', 'c-emb');
+      var cv = el('span', 'c-ore');
       cost.appendChild(cv);
       add(g, el('div', 'name', 'Lantern ' + (lv0 + 1)), el('div', 'sub', 'Stardust +8% · stars fall 3% slower'), cost);
       var btn = ui.buyButton();
       setText(btn.l, 'Light'); setText(btn.s, 'Lv ' + (lv0 + 1));
-      // one level per deliberate press (five expensive one-off levels: holding must not empty the embers)
-      btn.addEventListener('click', function () { var s = S(); if (s && X.buyLantern(s)) { snd('buy', { kind: 'kiln' }); ui.markDirty(); } });
+      // one level per deliberate press (five expensive one-off levels: holding must not empty the Ore)
+      btn.addEventListener('click', function () { var s = S(); if (s && X.buyLantern(s)) { snd('buy', { kind: 'lantern' }); ui.markDirty(); } });
       add(r, g, btn);
       c.appendChild(r);
       host.appendChild(c);
       return function (s) {
-        var cst = X.lanternCost(s), have = (s.ember && +s.ember.embers) || 0, okk = have >= cst && cst > 0;
-        setText(cv, fmt(cst) + ' embers');
+        var cst = X.lanternCost(s), have = HOARD.mines ? HOARD.mines.ore(s) : 0, okk = have >= cst && cst > 0;
+        setText(cv, fmt(cst) + ' Ore');
         setCls(cv, 'short', !okk);
         setCls(btn, 'can', okk);
       };
@@ -791,7 +791,7 @@
     } else if (d.type === 'light') {
       ui.toast('First Light: Rank ' + d.rank + '.', '+' + grp(d.dust) + ' Stardust.', 'sky');
     } else if (d.type === 'lantern') {
-      ui.toast('Sky Lantern lit.', lantLine(d.lv) + '.', 'ember');
+      ui.toast('Sky Lantern lit.', lantLine(d.lv) + '.', 'mines');
     }
   });
   E.on('myth', function () { if (run) abortFall('ascend'); });

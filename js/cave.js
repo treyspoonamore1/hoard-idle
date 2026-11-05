@@ -17,7 +17,8 @@
     cave.streak = function () { return 1; };
     cave.anchor = function () { return { x: 0, y: 0, cx: 0, cy: 0 }; };
     cave.metrics = function () { return null; };
-    cave.coinCount = function () { return 0; };
+    cave.coinCount = cave.nugCount = function () { return 0; };
+    cave.nuggets = function () { return []; };
     return;
   }
 
@@ -47,7 +48,7 @@
   var W = 1, H = 1, dpr = 1, baseY = 1, unit = 1, coinR = 8, dk = 1, sizeKey = '';
   var rectL = 0, rectT = 0;
   var bgCv = null, pileCv = null, pileKey = -999, pileW = 40, pileH = 12, pileCw = 1, pileCh = 1, pileOx = 0, pileOy = 0;
-  var sprFace = null, sprLie = null, sprGlow = null, sprEmber = null, sprStar = null;
+  var sprFace = null, sprLie = null, sprGlow = null, sprEmber = null, sprStar = null, sprNug = null;
   var glowGrad = null, glowHot = null, dragonGrad = null, headGrad = null, wingGrad = null;
   var C = {
     cave: '#16131f', rock: '#221d2e', rock2: '#2d2640', gold: '#f2b84b', goldHi: '#ffe08a',
@@ -55,12 +56,19 @@
     goldRGB: '242,184,75', goldHiRGB: '255,224,138', emberRGB: '232,99,58', rock2RGB: '45,38,64'
   };
   var S = null, E = null, clock = 0, rm = false, mql = null;
-  var st = { coinWorth: 1, spillRate: 1.5, sweepRate: 0, gustWorthMult: 3, maxStreak: 5, emberActive: false, frenzyActive: false };
+  var st = { coinWorth: 1, spillRate: 1.5, sweepRate: 0, gustWorthMult: 3, maxStreak: 5, emberActive: false, frenzyActive: false, minesOpen: false };
+  // Ore nuggets (js/mines.js, SPEC-MINES B6): while the Mines are open 1 spilled coin in NUG_EVERY is a blue-grey nugget.
+  // It pays like a coin and also digs Ore; it never merges, brooms leave it, only swipes and the player's own gusts
+  // collect it (Restless Wings' auto-gust leaves nuggets on the floor: they are the swipe reward, review M1). Resting
+  // nuggets keep out from under the Gust and Stars buttons (review M2) and fully on screen (code review #4).
+  var NUG_EVERY = 8, NUG_MAX = 6, NUG_FILL = '#6fa3cf', NUG_FLOAT = '#9fc3d9', pendNug = 0;
+  // canvas-local x spans of the buttons that sit over the floor (refreshed 4x a second; no allocation per frame)
+  var nugZones = [{ l: 0, r: 0 }, { l: 0, r: 0 }], nugZoneN = 0, NUG_BTN_IDS = ['gust', 'skybtn'];
   var stT = 0, stTop = 3, tiMin = 70, tiMax = 130;
 
   // pools
   var coins = [], coinCount = 0, mergeCur = 0, i0;
-  for (i0 = 0; i0 < MAX_COINS; i0++) coins.push({ on: false, x: 0, y: 0, vx: 0, vy: 0, r: 8, v: 1, born: 0, spin: 0, sv: 0, g: false, pulse: 0, yo: 0 });
+  for (i0 = 0; i0 < MAX_COINS; i0++) coins.push({ on: false, x: 0, y: 0, vx: 0, vy: 0, r: 8, v: 1, born: 0, spin: 0, sv: 0, g: false, pulse: 0, yo: 0, n: false, ph: 0 });
   var parts = [], partCount = 0;
   for (i0 = 0; i0 < MAX_PARTS; i0++) parts.push({ on: false, k: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, s: 1, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, rot: 0 });
   var floats = [];
@@ -75,7 +83,7 @@
   // pointer / swipe
   var down = false, pid = -1, px = 0, py = 0, fx = -1, fy = -1, frameMove = 0, spd = 0, newStroke = true;
   var strokePx = 0, pendN = 0, pendV = 0, gainX = 0, gainY = 0;
-  var gA = { g: 0, t: 0, x: 0, y: 0 }, gB = { g: 0, t: 0, x: 0, y: 0 };
+  var gA = { g: 0, t: 0, x: 0, y: 0 }, gB = { g: 0, t: 0, x: 0, y: 0 }, gO = { g: 0, t: 0, x: 0, y: 0, ore: true };
   // streak
   var stkT = 0, stkIdx = 0, stillT = 0, decayT = 0, stkPulse = 0, stkShow = 0, stkLabel = '×1', stkLabelV = 1;
   // spill
@@ -255,6 +263,22 @@
       });
     }
     sprGlow = glow(C.goldHiRGB, C.goldRGB);
+    // Ore nugget: a lumpy steel-blue rock with a darker edge and two pale facets (the glint is drawn live)
+    sprNug = makeSprite(28, 28, function (g) {
+      var pts = [[-0.86, -0.18], [-0.52, -0.78], [0.08, -0.9], [0.66, -0.6], [0.92, 0.02], [0.6, 0.7], [-0.04, 0.88], [-0.7, 0.56]];
+      g.translate(14, 14);
+      g.beginPath();
+      for (var i = 0; i < pts.length; i++) { var q = pts[i]; if (i) g.lineTo(q[0] * 12, q[1] * 12); else g.moveTo(q[0] * 12, q[1] * 12); }
+      g.closePath();
+      var rg = g.createLinearGradient(-10, -10, 10, 12);
+      rg.addColorStop(0, '#b6d8f2'); rg.addColorStop(0.45, NUG_FILL); rg.addColorStop(1, '#2f5f86');   // bluer than the pile's gems (review N9)
+      g.fillStyle = rg; g.fill();
+      g.lineWidth = 1.6; g.strokeStyle = '#2f4656'; g.stroke();
+      g.fillStyle = 'rgba(255,255,255,0.32)';
+      g.beginPath(); g.moveTo(-6, -7); g.lineTo(1, -9.5); g.lineTo(-1, -3); g.closePath(); g.fill();
+      g.fillStyle = 'rgba(20,36,48,0.35)';
+      g.beginPath(); g.moveTo(3, 3); g.lineTo(10, 1); g.lineTo(6, 8); g.closePath(); g.fill();
+    });
     sprEmber = glow('255,200,140', C.emberRGB);
     sprStar = makeSprite(32, 32, function (g) {
       g.translate(16, 16);
@@ -627,7 +651,20 @@
   function flushGain(acc, dt) {
     if (acc.g <= 0) { acc.t = 0; return; }
     acc.t += dt;
-    if (acc.t >= FLOAT_BATCH) { spawnFloat(acc.x, acc.y - 22, acc.g, false); acc.g = 0; acc.t = 0; }
+    if (acc.t >= FLOAT_BATCH) {
+      if (acc.ore) { // "+5.6K Ore" in muted steel, a little above the gold float of the same swipe
+        var f = spawnFloat(acc.x, acc.y - 46, 0, false);
+        if (f) {
+          f.txt = '+' + fmtNum(acc.g) + ' Ore'; f.col = NUG_FLOAT;
+          // the label is wider than a gold number: keep all of it on screen and clear of the top HUD (code review #1)
+          var tw = 60;
+          try { if (ctx) { ctx.font = F_FLOAT; tw = ctx.measureText(f.txt).width; } } catch (e) { tw = 60; }
+          f.x = clamp(f.x, tw * 0.5 + 6, Math.max(tw * 0.5 + 6, W - tw * 0.5 - 6));
+          f.y = clamp(f.y, 64, Math.max(64, H - 10));
+        }
+      } else spawnFloat(acc.x, acc.y - 22, acc.g, false);
+      acc.g = 0; acc.t = 0;
+    }
   }
 
   // ---------------------------------------------------------------- coins
@@ -637,7 +674,8 @@
     if (coinCount < MAX_COINS) for (var i = 0; i < MAX_COINS; i++) if (!coins[i].on) { c = coins[i]; break; }
     if (!c) { mergeCoin(); return; }
     c.on = true; coinCount++;
-    c.v = 1; c.r = coinR; c.born = clock; c.g = false; c.pulse = 0;
+    c.v = 1; c.r = coinR; c.born = clock; c.g = false; c.pulse = 0; c.ph = Math.random() * TAU;
+    c.n = st.minesOpen && Math.random() < 1 / NUG_EVERY && nugsOnScreen() < NUG_MAX;
     c.spin = Math.random() * TAU; c.sv = 7 + Math.random() * 9; c.yo = Math.random() * 3;
     if (mode === 1) {
       var a = Math.random() * TAU, sp = 120 + Math.random() * 280;
@@ -652,6 +690,43 @@
       if (Math.abs(x - W * 0.5) < dz) x = W * 0.5 + (x < W * 0.5 ? -dz : dz) * (1 + Math.random() * 0.4);
       c.x = clamp(x, c.r, W - c.r); c.y = -c.r * 2; c.vx = (Math.random() - 0.5) * 50; c.vy = Math.random() * 90;
     }
+    if (c.n) c.x = clamp(c.x, NUG_EDGE * c.r, W - NUG_EDGE * c.r);
+  }
+  var NUG_EDGE = 1.3;   // a nugget is drawn about 2.45 r wide: keep its centre 1.3 r from the edges
+  function refreshNugZones() {
+    nugZoneN = 0;
+    if (!canvas || typeof document === 'undefined') return;
+    try {
+      var cr = canvas.getBoundingClientRect();
+      for (var i = 0; i < NUG_BTN_IDS.length; i++) {
+        var b = document.getElementById(NUG_BTN_IDS[i]);
+        if (!b || b.hidden || b.offsetParent === null) continue;
+        var a = b.getBoundingClientRect();
+        if (!(a.width > 0)) continue;
+        var l = a.left - cr.left, r = a.right - cr.left, bot = a.bottom - cr.top;
+        if (bot < baseY - pileH * 0.2 - 30) continue;   // only a button low enough to sit over the floor
+        var z = nugZones[nugZoneN++];
+        z.l = l; z.r = r;
+        if (nugZoneN >= nugZones.length) break;
+      }
+    } catch (e) { nugZoneN = 0; }
+  }
+  // a resting nugget under a button slides to the button's inner side (towards the pile), where a swipe finds it
+  function nugKeepOut(c) {
+    var pad = NUG_EDGE * c.r;
+    for (var i = 0; i < nugZoneN; i++) {
+      var z = nugZones[i];
+      if (c.x > z.l - pad && c.x < z.r + pad) {
+        var spread = (c.ph / TAU) * c.r * 2;   // a fixed per-nugget offset, so several do not stack on one spot
+        var inner = (z.l + z.r) * 0.5 > W * 0.5 ? z.l - pad - spread : z.r + pad + spread;
+        if (inner > pad && inner < W - pad) { c.x = inner; c.vx = 0; }
+      }
+    }
+  }
+  function nugsOnScreen() {
+    var n = 0;
+    for (var i = 0; i < MAX_COINS; i++) if (coins[i].on && coins[i].n) n++;
+    return n;
   }
   function mergeCoin() {
     var pass, k, c;
@@ -659,7 +734,7 @@
       for (k = 0; k < MAX_COINS; k++) {
         mergeCur = (mergeCur + 1) % MAX_COINS;
         c = coins[mergeCur];
-        if (c.on && (c.g || pass === 1)) {
+        if (c.on && !c.n && (c.g || pass === 1)) { // nuggets never merge and are never merge targets
           c.v += 1; c.r = coinRadius(c.v); c.pulse = 1;
           if (!rm && Math.random() < 0.5) spawnPart(P_STAR, c.x, c.y - 2, 0, -10, 0.45, 0.6);
           return;
@@ -670,6 +745,7 @@
   function collectCoin(c, x, y) {
     c.on = false; coinCount--;
     pendN++; pendV += c.v;
+    if (c.n) { pendNug++; c.n = false; }
     gainX = x; gainY = y;
     spawnFly(c.x, c.y, c.r);
     if (!rm) spawnPart(P_STAR, c.x, c.y, 0, 0, 0.3, 0.7 + Math.min(1, c.v * 0.05));
@@ -711,7 +787,9 @@
         c.vx *= fr;
         if (push === 0 && sl > -0.14 && sl < 0.14 && c.vx > -18 && c.vx < 18) c.vx = 0;
         c.x += c.vx * dt;
-        if (c.x < c.r) { c.x = c.r; c.vx = 0; } else if (c.x > W - c.r) { c.x = W - c.r; c.vx = 0; }
+        var lo = c.n ? NUG_EDGE * c.r : c.r;
+        if (c.x < lo) { c.x = lo; c.vx = 0; } else if (c.x > W - lo) { c.x = W - lo; c.vx = 0; }
+        if (c.n && nugZoneN) nugKeepOut(c);
         c.y = groundY(c.x) - c.r * 0.3 + c.yo;
       }
     }
@@ -857,15 +935,22 @@
     var used = false;
     try { used = !!E.useGust(S); } catch (e) { used = false; }
     if (!used) return false;
-    var n = 0, sv = 0;
+    var n = 0, sv = 0, kept = 0, nugs = 0;
+    var auto = false;
+    try { auto = !!(E && typeof E.inAuto === 'function' && E.inAuto()); } catch (e) { auto = false; }
     for (var i = 0; i < MAX_COINS; i++) {
       var c = coins[i];
       if (!c.on) continue;
+      if (c.n && auto) { kept++; continue; }   // Restless Wings leaves the nuggets: they are for the player's swipe
       n++; sv += c.v;
+      if (c.n) { pendNug++; nugs++; c.n = false; }
       c.on = false;
       spawnFly(c.x, c.y, c.r);
     }
-    coinCount = 0;
+    coinCount = kept;
+    // the "+Ore" float rises from above the pile, just over the gust's big gold number (code review #1; flushGain puts
+    // the Ore label 46 px above gainY)
+    if (nugs) { gainX = W * 0.5; gainY = peakY() - 70 * dk + 4 - 36; }
     // a gust always pays at least gustFloorCoins coins, so pressing it when ready is never wasted
     var floorN = (HOARD.data && HOARD.data.C && HOARD.data.C.gustFloorCoins) || 0;
     if (n < floorN) { sv += floorN - n; n = floorN; }
@@ -951,10 +1036,10 @@
     if (kob.sweep > 0) kob.sweep -= dt;
     kob.re -= dt;
     var tc = kob.tgt >= 0 ? coins[kob.tgt] : null;
-    if (kob.re <= 0 || !tc || !tc.on || !tc.g) {
+    if (kob.re <= 0 || !tc || !tc.on || !tc.g || tc.n) {
       kob.re = 0.3; kob.tgt = -1; tc = null;
       var best = Infinity;
-      for (var i = 0; i < MAX_COINS; i++) { var c = coins[i]; if (c.on && c.g && c.born < best) { best = c.born; kob.tgt = i; } }
+      for (var i = 0; i < MAX_COINS; i++) { var c = coins[i]; if (c.on && c.g && !c.n && c.born < best) { best = c.born; kob.tgt = i; } } // brooms leave nuggets
       if (kob.tgt >= 0) tc = coins[kob.tgt];
     }
     var tx, speed;
@@ -1220,6 +1305,7 @@
         g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
       }
       var r = c.r * (1 + c.pulse * 0.25);
+      if (c.n) { drawNug(g, c, r); continue; }
       if (c.g) drawSpr(sprLie, c.x, c.y, r * 2.4, r * 1.4);
       else {
         var sx = Math.abs(Math.cos(c.spin));
@@ -1227,6 +1313,22 @@
         drawSpr(sprFace, c.x, c.y, r * 2.4 * sx, r * 2.4);
       }
     }
+  }
+  // a nugget: the rock sprite (tumbling while it falls) and a white glint that twinkles (still under reduced motion)
+  function drawNug(g, c, r) {
+    var sz = r * 2.45;
+    if (c.g) drawSpr(sprNug, c.x, c.y - r * 0.12, sz, sz * 0.86);
+    else {
+      g.save(); g.translate(c.x, c.y); g.rotate(rm ? 0 : c.spin * 0.25);
+      drawSpr(sprNug, 0, 0, sz, sz);
+      g.restore();
+    }
+    var tw = rm ? 0.8 : 0.45 + 0.55 * Math.max(0, Math.sin(clock * 2.6 + c.ph));
+    g.globalCompositeOperation = 'lighter';
+    g.globalAlpha = tw;
+    var gs = r * (rm ? 1.1 : 0.8 + 0.6 * tw);
+    drawSpr(sprStar, c.x - r * 0.32, c.y - r * 0.42, gs, gs);
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
   }
   function drawParts(additive) {
     var g = ctx;
@@ -1466,6 +1568,7 @@
   // ---------------------------------------------------------------- update
   function refreshStats() {
     stT = 0.25;
+    refreshNugZones();
     if (!E || !S || typeof E.stats !== 'function') return;
     var s = null;
     try { s = E.stats(S); } catch (e) { s = null; }
@@ -1478,6 +1581,7 @@
     stRamp = clamp(num(s.streakRamp, 1), 0.1, 100);
     st.emberActive = !!s.emberActive;
     st.frenzyActive = !!s.frenzyActive;
+    try { st.minesOpen = !!(HOARD.mines && typeof HOARD.mines.isOpen === 'function' && HOARD.mines.isOpen(S)); } catch (e) { st.minesOpen = false; }
     var ti = s.treasureInterval;
     if (ti && ti.length >= 2) {
       tiMin = Math.max(1, num(ti[0], 70));
@@ -1495,6 +1599,12 @@
         addGain(gA, g, gainX, gainY);
         sfx('coin', { n: pendN, streak: mult });
         pendN = 0; pendV = 0;
+      }
+      if (pendNug > 0) {
+        var M = HOARD.mines, ore = 0;
+        try { ore = M && typeof M.nuggets === 'function' ? num(M.nuggets(S, pendNug), 0) : 0; } catch (e) { ore = 0; }
+        pendNug = 0;
+        if (ore > 0) { gO.g += ore; gO.x = gainX; gO.y = gainY; }
       }
       if (strokePx >= STROKE_STEP) {
         var n = Math.floor(strokePx / STROKE_STEP);
@@ -1518,6 +1628,7 @@
     updateParts(dt);
     flushGain(gA, dt);
     flushGain(gB, dt);
+    flushGain(gO, dt);
     updateAmbience(dt);
     updatePile();
   }
@@ -1645,8 +1756,11 @@
   cave.metrics = function () {
     return { w: W, h: H, dpr: dpr, unit: unit, dk: dk, baseY: baseY, peakY: peakY(), pileW: pileW, pileH: pileH, coinR: coinR, reducedMotion: rm, inited: inited, coins: coinCount };
   };
-  // coins on screen right now (Restless Wings auto-gust reads this)
+  // coins on screen right now (Restless Wings auto-gust reads this minus nugCount(): it leaves nuggets alone)
   cave.coinCount = function () { return inited ? coinCount : 0; };
+  cave.nugCount = function () { return inited ? nugsOnScreen() : 0; };
+  // test hook (cave-check / smoke): screen positions of the nuggets on screen
+  cave.nuggets = function () { var o = []; for (var i = 0; i < MAX_COINS; i++) if (coins[i].on && coins[i].n) o.push([coins[i].x, coins[i].y]); return o; };
   // floating label like the gold numbers (text is drawn as given; color optional)
   cave.float = function (x, y, text, big, color) {
     if (!inited) return;

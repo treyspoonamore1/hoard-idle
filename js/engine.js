@@ -135,6 +135,7 @@
   var tickHooks = [];     // { name, fn(state, dt, isOffline) }
   var sleepHooks = [];    // { name, fn(state, prevSnapshot, reason) }
   var stateDefs = [];     // { name, fn() -> default subtree, sanitize?(saved, defaults) -> subtree }
+  var loadHooks = [];     // { name, fn(raw, o) }: one-time save conversions, run at the end of sanitize()
   var errCount = {};
   function upsert(list, item) {
     for (var i = 0; i < list.length; i++) if (list[i].name === item.name) { list[i] = item; return; }
@@ -156,6 +157,13 @@
   function addSleepHook(name, fn) {
     if (typeof name !== 'string' || typeof fn !== 'function') return false;
     upsert(sleepHooks, { name: name, fn: fn }); return true;
+  }
+  // fn(raw, o): runs at the end of every sanitize() (each load, cloud pull, import), after the module subtrees and the
+  // unknown top-level keys are in o and before the missions are rebuilt. raw = the migrated raw save (read only),
+  // o = the sanitized state (write here). A conversion must guard itself with a flag in o.flags so it runs once.
+  function addLoadHook(name, fn) {
+    if (typeof name !== 'string' || typeof fn !== 'function') return false;
+    upsert(loadHooks, { name: name, fn: fn }); return true;
   }
   // fn(state) -> the longest offline sub-step (seconds) the module can live with, or 0 for no wish. offline() then uses
   // more sub-steps for a long absence (never fewer than C.offlineSteps, at most C.offlineStepsMax). Lore automation
@@ -359,6 +367,8 @@
       var uv = jsonSafe(s[uk]);
       if (uv !== undefined) o[uk] = uv;
     }
+    if (!isObj(o.flags)) o.flags = {};
+    for (var lh = 0; lh < loadHooks.length; lh++) guarded('load', loadHooks[lh], [s, o]);
     o.v = VERSION;
     if (Array.isArray(s.missions)) {
       s.missions.forEach(function (m) {
@@ -572,10 +582,9 @@
 
   // ---------------------------------------------------------------- v1 bonuses as mod sources
   function legendMult(state) { return 1 + C.legendPer * pos(state.legend); }
-  function rankMult(state) { return 1 + C.rankGpsPer * Math.max(0, fin(state.rank, 1) - C.rankGpsAfter); }
   addModSource('legend', function (s, M) { M.allMult *= legendMult(s); });
+  // Dragon Rank gives no gold/s of its own (ranks 7..12 open the Mines and First Light instead): only the high streaks
   addModSource('rank', function (s, M) {
-    M.gpsMult *= rankMult(s);
     if (fin(s.rank, 1) >= C.streakHighRank) M.streakHigh = true;
   });
   addModSource('upgrades', function (s, M) {
@@ -608,13 +617,6 @@
     if (owned >= 300) n += Math.floor((owned - 200) / 100);
     return n;
   }
-  // Ember kilns keep the v2 curve (25 / 50 / 100 / 150 / 200, then every 100)
-  function milestoneCountKiln(owned) {
-    var n = 0, m = D.kilnMilestones || [25, 50, 100, 150, 200];
-    for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
-    if (owned >= 300) n += Math.floor((owned - 200) / 100);
-    return n;
-  }
   function milestoneCountTier(owned) {
     var n = 0, m = D.tierMilestones;
     for (var i = 0; i < m.length; i++) if (owned >= m[i]) n++;
@@ -643,11 +645,6 @@
     if (kind === 'building') {
       var m = D.buildingMilestones;
       for (var i = 0; i < m.length; i++) if (owned < m[i]) return m[i];
-      return (Math.floor(owned / 100) + 1) * 100;
-    }
-    if (kind === 'kiln') {
-      var km = D.kilnMilestones || [25, 50, 100, 150, 200];
-      for (var k = 0; k < km.length; k++) if (owned < km[k]) return km[k];
       return (Math.floor(owned / 100) + 1) * 100;
     }
     if (kind === 'tier') {
@@ -1129,6 +1126,24 @@
   // ================================================================ missions
   var TPL = {};
   D.missionTemplates.forEach(function (t) { TPL[t.tpl] = t; });
+  var CORE_TPL = {};
+  D.missionTemplates.forEach(function (t) { CORE_TPL[t.tpl] = 1; });
+  // feature modules add quest kinds (EXTENSIONS.md 2.6c): def = { tpl, minRank, weight, act, group, text,
+  //   offer(state, st) -> bool, make(state, m, ctx), cur(state, m, st) -> progress, title(m) -> string }.
+  // ctx = { T, Ta, roll, st, rate, h2 }. A group holds at most one quest in the 3 slots. Saved quests of a
+  // registered tpl survive load (sanitize keeps m.key as saved); isAct / notePace treat them like the core ones.
+  function addMissionTemplate(def) {
+    if (!isObj(def) || typeof def.tpl !== 'string' || !def.tpl || CORE_TPL[def.tpl]) return false;
+    if (typeof def.make !== 'function' || typeof def.cur !== 'function') return false;
+    var t = { tpl: def.tpl, minRank: Math.max(1, Math.floor(fin(def.minRank, 1))), weight: Math.max(0, fin(def.weight, 1)),
+      act: !!def.act, group: typeof def.group === 'string' && def.group ? def.group : null, text: typeof def.text === 'string' ? def.text : '', def: def };
+    var list = D.missionTemplates, found = false;
+    for (var i = 0; i < list.length; i++) if (list[i].tpl === t.tpl) { list[i] = t; found = true; }
+    if (!found) list.push(t);
+    TPL[t.tpl] = t;
+    return true;
+  }
+  function tplDef(tpl) { return TPL.hasOwnProperty(tpl) && TPL[tpl].def ? TPL[tpl].def : null; }
 
   function niceUp(x) {
     x = Math.max(1, fin(x, 1));
@@ -1215,6 +1230,8 @@
       case 'gusts': return pos(state.run.gusts - m.base);
       case 'gps': return (st || stats(state)).baseGps;
     }
+    var df = tplDef(m.tpl);
+    if (df) { try { return pos(df.cur(state, m, st || stats(state))); } catch (e) { logErr('mission.cur:' + m.tpl, e); } }
     return 0;
   }
   function missionTitle(m) {
@@ -1229,6 +1246,8 @@
       case 'gusts': return 'Use ' + n + ' Wing Gust' + (m.target === 1 ? '' : 's');
       case 'gps': return 'Reach ' + n + ' gold/s';
     }
+    var df = tplDef(m.tpl);
+    if (df && typeof df.title === 'function') { try { return String(df.title(m)); } catch (e) { logErr('mission.title:' + m.tpl, e); } }
     return '?';
   }
 
@@ -1272,8 +1291,13 @@
       return m;
     }
 
-    var active = {}, actBusy = false;
-    (state.missions || []).forEach(function (x) { if (x) { active[x.tpl + ':' + x.key] = true; active[x.tpl] = (active[x.tpl] || 0) + 1; if (isAct(x.tpl)) actBusy = true; } });
+    var active = {}, actBusy = false, groupBusy = {};
+    (state.missions || []).forEach(function (x) {
+      if (!x) return;
+      active[x.tpl + ':' + x.key] = true; active[x.tpl] = (active[x.tpl] || 0) + 1;
+      if (isAct(x.tpl)) actBusy = true;
+      if (TPL[x.tpl] && TPL[x.tpl].group) groupBusy[TPL[x.tpl].group] = true;
+    });
     var cands = [];
     var unlockedB = D.buildings.filter(function (b) { return r >= b.rank; });
     var unlockedT = [0, 1, 2, 3, 4].filter(function (i) { return r >= i + 1; });
@@ -1286,7 +1310,14 @@
       if (t.act && actBusy) return; // one activity quest at a time: two would both gate on the player's own play
       if (t.tpl === 'streak' && !nextStreak) return;
       if (t.tpl === 'gps' && st.baseGps < 1) return;
+      if (t.group && groupBusy[t.group]) return; // one quest per group (e.g. one Mines quest) in the slots
+      if (t.def && typeof t.def.offer === 'function') {
+        var offered = false;
+        try { offered = !!t.def.offer(state, st); } catch (e) { logErr('mission.offer:' + t.tpl, e); offered = false; }
+        if (!offered) return;
+      }
       var w = t.weight;
+      if (!(w > 0)) return;
       if (active[t.tpl]) w *= 0.15; // prefer variety
       cands.push({ t: t, w: w });
     });
@@ -1354,6 +1385,13 @@
         var reach = st.baseGps + gpsReach(state, st, rate * T * C.missionBuildShare);
         m.target = niceUp(Math.max(st.baseGps * C.missionGpsMinStep, Math.min(gm, reach)));
         break;
+      }
+      default: {
+        var df = tplDef(m.tpl), made = false;
+        if (df) {
+          try { df.make(state, m, { T: T, Ta: Ta, roll: roll, st: st, rate: rate, h2: h2 }); made = true; } catch (e) { logErr('mission.make:' + m.tpl, e); }
+        }
+        if (!made) { m.tpl = 'earn'; m.key = null; m.base = pos(state.earnedRun); m.target = niceUp(Math.max(100 * r, rate * T)); }
       }
     }
     m.target = Math.max(1, cl(m.target));
@@ -1713,13 +1751,15 @@
     nestSize: function (state) { return ok(state) ? nestSize(state) : 0; },
     warmthAt: function (w) { return warmthOf(w); },
     nestIn: function (state, sec, tier, n) { return ok(state) ? nestIn(state, sec, tier, n) : 0; },
-    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : kind === 'kiln' ? milestoneCountKiln(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); },
+    milestoneMult: function (kind, owned) { return pow2(kind === 'building' ? milestoneCountBuilding(fin(owned, 0)) : milestoneCountTier(fin(owned, 0))); },
     // ---- v2 extension points (EXTENSIONS.md)
     version: VERSION,
     addModSource: addModSource,
     addTickHook: addTickHook,
     addSleepHook: addSleepHook,
     addOfflineStepHook: addOfflineStepHook,
+    addLoadHook: addLoadHook,
+    addMissionTemplate: addMissionTemplate,
     addStateDefaults: addStateDefaults,
     registerCards: registerCards,
     flag: flag,

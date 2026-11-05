@@ -5,6 +5,12 @@ Read `SPEC.md` first (v1 contract, still valid unless overridden here). v2 answe
 
 So the headline of v2: **Legend becomes a currency you spend on a Lore tree** — automation, head starts, power, unlocks — with a second prestige layer (Myth) above it, a second dragon (Ember), limited-time event lairs, sound, a stats page, safe save migrations, and a private playtest log Claude can read to tune balance.
 
+> **Mines pass A (trim), 2026-11** — see `SPEC-MINES.md` SPEC A. Ember (section 2) and the event lairs (section 3)
+> are retired and merged into the Mines (`js/mines.js`, `js/ui-mines.js`); old saves are converted once on load.
+> In the Lore tree, Glittering Halls and Fertile Clutches merged into Dragon's Hunger (id `greed`), Kobold Haggling,
+> Remembered Claws, Loyal Brooms and Nest Egg are cut (Legend refunded), Wake Ember is now **Call the Deep** and
+> Ember's Brood is **Deep Veins**. Ranks 7..12 no longer give +5% gold/s. Rows below that changed are marked.
+
 Hard rules (unchanged from v1): swipe, never tap-spam; press-and-hold for repeated buys; no emoji; no alert/confirm/prompt; plain classic scripts on `window.HOARD`; engine-side code runs in Node (no DOM); never NaN/Infinity; single deliberate dark theme with the v1 tokens.
 
 ---------------------------------------------------------------------------
@@ -14,10 +20,10 @@ Hard rules (unchanged from v1): swipe, never tap-spam; press-and-hold for repeat
 New files, loaded in this order in `index.html` (classic `<script src>`):
 ```
 js/data.js  js/engine.js                       (v1, extended by foundation)
-js/lore.js  js/events.js  js/ember.js          (engine-side feature modules; Node-safe)
+js/lore.js  js/mines.js  js/sky.js            (engine-side feature modules; Node-safe)
 js/log.js   js/sound.js                        (browser modules; guard DOM/Audio)
 js/cave.js  js/ui.js                           (v1, extended by foundation)
-js/ui-lore.js  js/ui-events.js  js/ui-ember.js  js/ui-stats.js   (UI feature modules)
+js/ui-lore.js  js/ui-mines.js  js/ui-stats.js  js/ui-sky.js   (UI feature modules)
 js/main.js
 ```
 Feature agents own only their files. Foundation creates every file above as a stub (`'use strict'` IIFE, no-op) so the page loads at every stage.
@@ -133,27 +139,27 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 | id | name | cost / levels | effect |
 |---|---|---|---|
 | start_gold | Buried Cache | 1, 4, 15, 60 (4 lv) | Start each run with 500 / 50K / 5M / 500M gold |
-| keep_claws | Remembered Claws | 3 | Sharper Claws and Golden Scales upgrades survive Long Sleep |
-| keep_broom | Loyal Brooms | 3 | Broom Crew upgrades survive Long Sleep |
+| ~~keep_claws~~ | ~~Remembered Claws~~ | 3 | **cut in the Mines pass** (Lair Steward re-buys upgrades; 3 Legend refunded) |
+| ~~keep_broom~~ | ~~Loyal Brooms~~ | 3 | **cut in the Mines pass** (3 Legend refunded) |
 | start_rank | Old Renown | 5, 25 (2 lv) | Start each run at Dragon Rank 3 / 5 |
-| start_brood | Nest Egg | 4, 20 (2 lv) | Start with 300 Eggs + 25 Wyrmlings / also 12 Drakes + 3 Wyverns |
+| ~~start_brood~~ | ~~Nest Egg~~ | 4, 20 (2 lv) | **cut in the Mines pass** (4 / 24 Legend refunded) |
 
 **Power** (reset by Myth; multi-level, cost growth ×2.2):
 | id | name | base cost, max lv | effect per level |
 |---|---|---|---|
-| greed | Dragon's Greed | 1, 15 | coin & stroke worth ×(1 + 0.5·lv) |
-| halls | Glittering Halls | 2, 15 | building gold/s ×(1 + 0.5·lv) |
-| clutches | Fertile Clutches | 2, 15 | minion production ×(1 + 0.5·lv) |
+| greed | **Dragon's Hunger** (Mines pass) | 5, 15 (×4 per lv) | coin worth, building gold/s and minion output ×(1 + 0.25·lv); loads as max(greed, halls, clutches) |
+| ~~halls~~ | ~~Glittering Halls~~ | | merged into Dragon's Hunger |
+| ~~clutches~~ | ~~Fertile Clutches~~ | | merged into Dragon's Hunger |
 | talons | Steady Talons | 3, 3 | streak ramps 1.5×/2×/2.5× faster; lv1 unlocks ×8 cap |
 | magpie | Magpie Instinct | 3, 4 | treasures +25% more often per lv; Frenzy +8s per lv |
 | dreams | Deep Dreams | 6, 6 | Legend gain +20% per lv |
 | watch | Long Watch | 2, 4 | offline cap +4h per lv, offline gains ×1.15 per lv |
-| bargain | Kobold Haggling | 4, 5 | building & minion gold cost ×0.9 per lv |
+| ~~bargain~~ | ~~Kobold Haggling~~ | 4, 5 | **cut in the Mines pass** (all Legend refunded) |
 
 **Unlocks**:
 | id | name | cost | effect |
 |---|---|---|---|
-| wake_ember | Wake Ember | 12 | Unlocks the second dragon, Ember (sets `state.lore.wake_ember = 1`; ember module checks it) |
+| wake_ember | **Call the Deep** (was Wake Ember) | 12 | Opens the Mines now, without waiting for Dragon Rank 7 |
 | myth_gate | The First Myth | 40 | Unlocks the Myth layer (Ascend) |
 
 ### Myth (second prestige layer)
@@ -166,7 +172,7 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 | r_start | Ancestral Lair | 2 | Each run starts with 10 of every unlocked building and rank 5 |
 | r_keep | Unfading Lore | 3 | Keep 25% of Power-branch lore levels (rounded down) through Ascend |
 | r_cards | Gilded Chests | 2 | Chests give +1 card |
-| r_ember | Ember's Brood | 2 | Ember grows ×3 faster |
+| r_ember | **Deep Veins** (was Ember's Brood) | 2 | Miners dig ×3 |
 | r_time | Timeless Sleep | 4 | Offline cap +12h, offline gains ×2 |
 - Pacing targets (active-ish player with sensible lore buys): Sleep 2 ≈ 20–25 min after Sleep 1, sleeps 3–6 each 12–20 min, Myth 1 available ≈ 3–5 h total play; Myth 2 within ~1.5 h after Myth 1. Every Sleep must give at least one meaningful purchase.
 
@@ -177,7 +183,11 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 
 ---------------------------------------------------------------------------
 
-## 2. Ember, the second dragon (EMBER agent: `js/ember.js`, `js/ui-ember.js`)
+## 2. Ember, the second dragon — RETIRED (merged into the Mines, `SPEC-MINES.md` A1)
+
+Kept for history. `js/ember.js` is gone; Ember stays in her nook (`js/ui-mines.js` layer) and wakes when the Mines
+open. Saves convert once: embers / 5 → Ore, lifetime embers → Ember's Hearth (the old warmth, frozen), Breaths →
+Forge levels, kilns → Pick Crews. `state.ember` stays in the save as an archive.
 
 - Unlocked by lore `wake_ember`. State subtree `state.ember` via `addStateDefaults`.
 - Ember is a small ember-red fire dragon who sleeps in a side nook of the cave (draw via `HOARD.cave.addLayer`, z<0, left side; breathes tiny sparks; wakes animation when unlocked).
@@ -192,7 +202,11 @@ Automation runs in `addTickHook` (also offline, so idle progress uses it), with 
 
 ---------------------------------------------------------------------------
 
-## 3. Event lairs (EVENTS agent: `js/events.js`, `js/ui-events.js`)
+## 3. Event lairs — RETIRED (`SPEC-MINES.md` A2)
+
+Kept for history. `js/events.js` / `js/ui-events.js` are gone; the 9 cards are registered by `js/mines.js` as Deep
+cards (same ids and powers). Saves convert once: unopened chests and a finished-but-unclaimed step pay their cards,
+each quest step claimed is worth 500 Ore. `state.events` stays in the save as an archive.
 
 - Unlock at Dragon Rank 3 of any run (or if `state.sleeps ≥ 1`). Three lairs rotate on a wall-clock schedule anchored to UTC dates: each lair runs **72 hours**, then 24 h break, then the next lair (Volcano Lair → Frozen Peak → Sunken Ship). For the player's first unlock, start the current lair immediately (store `state.events.firstStart`) so they don't wait.
 - Each lair has its own currency and a 4-tier AdCom chain (tier 1 makes currency; tier k makes tier k-1), bought with event currency only (each unit's price rises geometrically with the number of that tier bought; units made by the tier above are free and never raise prices), its own 10-step quest line (fixed sequence; claim → event chest), and **3 exclusive cards** per lair (9 total, registered with `registerCards`, rarity epic/legendary-ish, each with a `mod` contributing a permanent bonus, e.g. "Obsidian Heart: all gold ×(1+0.3·lv)").
@@ -250,12 +264,12 @@ not ridden is a graze (+1). The first comets show "Swipe along the comet" until 
 `dust = round((base + 15·rides + cuts) × (1 + 0.1·clamp(rank − 6, 0, 6)) × (1 + 0.08·lanterns) × (grand ? 1.5 : 1))`
 and spends exactly one charge (start never spends; abort spends and gives nothing).
 
-**Ember watches the sky**: while the Starfalls sit at the cap and Ember is awake, she catches a falling star (+10
+**Ember watches the sky**: while the Starfalls sit at the cap and the Mines are open (Ember is awake at the Forge), she catches a falling star (+10
 Stardust) every charge period, at most 4 per at-cap stretch, live or away (capAt is worked out from the accrual, so
 time away counts the same). **First Light**: the first time each Myth a run reaches ranks 7..12: +40·(rank − 6)
 Stardust (840 per Myth); a Long Sleep keeps it, an Ascend resets it. The rank box says "First Light: +40 Stardust,
-and brighter skies: +10% Stardust." when the next rank is 7+ and not yet lit this Myth (else just the brighter skies). **Sky Lanterns** (Ember tab): 2M / 10M / 50M / 250M / 1.25B embers; each +8% Stardust and
-stars fall 3% slower (Starfall only; spends `ember.embers`, never `ember.earned`, so warmth is unchanged). One level
+and brighter skies: +10% Stardust." when the next rank is 7+ and not yet lit this Myth (else just the brighter skies). **Sky Lanterns** (Mines tab since the Mines pass): 100K / 1M / 10M / 100M / 1B Ore (were 2M..1.25B embers); each +8% Stardust and
+stars fall 3% slower (Starfall only; spends `mines.ore`, never lifetime Ore, so the Forge glow is unchanged). One level
 per deliberate press (a hold does not repeat: five expensive one-off levels).
 
 **UI**: launcher `#skybtn` (52 px, above Gust; "Stars 2/4", "in 14m", "18s ×12" while running, soft glow when full;
@@ -264,7 +278,7 @@ threads, comets, progress line, combo above the finger, "Grand Starfall" banner,
 (caught, best combo, comet Ridden / Grazed / Missed (no row without a comet), twin pairs, Stardust with the
 multiplier reason, animated growth bar, stage-up line, Again / Close; its backdrop ignores presses for 0.7 s; if
 another sheet is open at the end, a toast sums the Starfall up instead of replacing it); Hoard tab section "Night Sky"
-(order −10, dot badge when full); Ember tab section "Sky Lanterns" (order 80). While stars fall, every toast except
+(order −10, dot badge when full); Mines tab section "Sky Lanterns" (order 80). While stars fall, every toast except
 the sky's own waits in the queue (`ui.holdToasts`) and the streak meter / rush pill dim to 30% (`cave.setHudDim`),
 so the top of the cave where stars enter stays clear. The welcome-back sheet gets a "Night sky:" line (Starfalls
 ready, Ember's catches, growth, First Light while away). Safety: the `sky` layer never throws (an error aborts the

@@ -1,7 +1,8 @@
 # Hoard v2 — extension API (foundation)
 
-This is the contract the four feature agents (LORE, EMBER, EVENTS, POLISH) code against.
-Read `SPEC.md` (v1 rules) and `SPEC-V2.md` (what to build) first. Everything here exists and is tested
+This is the contract the feature modules (LORE, MINES, SKY, POLISH) code against.
+Read `SPEC.md` (v1 rules), `SPEC-V2.md` and `SPEC-MINES.md` (the Mines pass: Ember and the event lairs were merged
+into the Mines, see its SPEC A) first. Everything here exists and is tested
 (`tools/smoke.cjs` exercises tabs, sections, chips, row extras, cave layers, sfx hooks and `ask()`;
 `tools/save-compat.cjs` covers saves and state defaults).
 
@@ -15,23 +16,23 @@ no emoji; no alert/confirm/prompt (use `HOARD.ui.ask`); never NaN/Infinity in st
 
 ```
 js/data.js  js/engine.js                         foundation (engine core + extension points)
-js/lore.js  js/events.js  js/ember.js  js/sky.js engine-side feature modules — Node-safe, no DOM, no window
+js/lore.js  js/mines.js  js/sky.js              engine-side feature modules — Node-safe, no DOM, no window
 js/log.js   js/sound.js                          browser modules (guard DOM/Audio), loaded BEFORE cave/ui
 js/cave.js  js/ui.js                             foundation (canvas scene / UI core)
-js/ui-lore.js  js/ui-events.js  js/ui-ember.js  js/ui-stats.js  js/ui-sky.js     UI feature modules (loaded AFTER ui.js)
+js/ui-lore.js  js/ui-mines.js  js/ui-stats.js  js/ui-sky.js     UI feature modules (loaded AFTER ui.js)
 js/main.js                                       foundation (boot, loop, saves, log wiring)
 ```
 
 | file | owner |
 |---|---|
 | lore.js, ui-lore.js | LORE |
-| ember.js, ui-ember.js | EMBER |
-| events.js, ui-events.js | EVENTS |
+| mines.js, ui-mines.js | MINES |
+| sky.js, ui-sky.js | SKY |
 | sound.js, ui-stats.js | POLISH |
 | everything else | FOUNDATION (do not edit; ask for an API instead) |
 
 Every file starts as a no-op stub, so the page loads at every stage. Keep your module's own globals on one
-namespace object, e.g. `HOARD.lore = { ... }`, `HOARD.ember`, `HOARD.events`, `HOARD.sound`.
+namespace object, e.g. `HOARD.lore = { ... }`, `HOARD.mines`, `HOARD.sky`, `HOARD.sound`.
 
 **When your code runs**
 
@@ -85,9 +86,7 @@ come after them (engine-side modules load after engine.js).
 // lore.js
 HOARD.engine.addModSource('lore', function (s, M) {
   var lv = (s.lore && +s.lore.greed) || 0;
-  if (lv > 0) { M.coinMult *= 1 + 0.5 * lv; M.strokeMult *= 1 + 0.5 * lv; }
-  var bar = (s.lore && +s.lore.bargain) || 0;
-  if (bar > 0) { M.costMultBuilding *= Math.pow(0.9, bar); M.costMultTier *= Math.pow(0.9, bar); }
+  if (lv > 0) { M.coinMult *= 1 + 0.25 * lv; M.gpsMult *= 1 + 0.25 * lv; }   // Dragon's Hunger
   if ((+s.lore.talons || 0) >= 1) M.streakHigh = true;
 });
 ```
@@ -123,7 +122,7 @@ HOARD.engine.addModSource('lore', function (s, M) {
 | `gustCd` | 45 | base gust cooldown seconds (upgrades set the min). |
 | `streakBonus` | 1 | value of the streak multiplier (Comet Shard +5%/lv). |
 | `tierCostMult[i]` | 1 ×5 | per-tier minion gold cost (Ember Egg card on tier 0). |
-| `frenzyMult` | 1 | Gold Frenzy strength (×7 × frenzyMult), e.g. EMBER "Fire Frenzy ×1.5". |
+| `frenzyMult` | 1 | Gold Frenzy strength (×7 × frenzyMult), e.g. the Forge's "Fire Frenzy" ×(1 + 0.25·lv). |
 
 The resulting formulas (`bg` = building gold/s before Frenzy):
 
@@ -139,13 +138,13 @@ tier rate = prod × 2^milestones × allMult × tierMult[i]
 - Pure and fast: read `state` and multiply into `M`. Never mutate `state`, never `emit`.
 - **Never call `E.stats`, `E.mods`, `E.buildingCost`, `E.tierCost`, `E.legendOnSleep`, `E.streak…` or
   anything that reads stats inside a mod source.** Those call the pipeline again and recurse forever.
-- Be defensive: your subtree can be missing on a hand-made state (`(s.ember && s.ember.x) || 0`).
+- Be defensive: your subtree can be missing on a hand-made state (`(s.mines && s.mines.x) || 0`).
 - A source that throws is skipped (logged) for that recompute. After 5 throws it is switched off.
 - Mods apply only while their condition holds. To keep something through Sleep, keep the state that drives it.
 
 **Stats cache, `E.dirty()`**: `stats(state)` is cached per (state object, `state.time`, global dirty epoch).
 Every engine mutator (buy*, claimMission, openChest, sleep, addEffect, grantCard, setFlag, spend, tick,
-offline) marks it dirty. **If your code changes anything a mod source reads (lore levels, ember totals,
+offline) marks it dirty. **If your code changes anything a mod source reads (lore levels, Ore totals,
 event-card copies, relics) outside a tick, call `HOARD.engine.dirty()` afterwards.** Otherwise the UI shows
 stale numbers until the next frame's tick. `tick()` always starts by marking dirty. Treat the object from
 `stats()` as read-only (it is shared).
@@ -155,14 +154,14 @@ p 0.12: ×1.32 per 10× brood), and past `C.broodKnee` (1e10 Eggs, warmth about 
 (same slope at the knee). `nest` = Σ tiers[i] × `C.broodEggs[i]` (1, 10, 80, 640, 5120: the Eggs each unit took to
 raise), so Eggs, the biggest pile, are most of it. It multiplies building gold/s; coins get `C.broodCoin` = 0.5 of it
 (the coin gps-part and Golden Scales use building gold/s ÷ warmth^0.5, so swiping keeps pace while the nest grows).
-Players see it as the "Nest bonus" (Ember has its own "warmth"). `stats()` returns `broodMult` and `nestSize`;
+Players see it as the "Nest bonus" (the Mines have their own "glow"). `stats()` returns `broodMult` and `nestSize`;
 `E.nestSize(state)`, `E.warmthAt(nest)` and `E.nestIn(state, sec, tier?, n?)` (the nest after `sec` s of production
 at today's rates, optionally with n more of a tier bought now; pure) are there for UI previews ("10× more → ×1.32",
 "Buy ×10: +1.2K gold/s within 5 min"). Building gold/s each: Digger 0.15, Raid 0.6, Mine 3, Tower 14, Well 112, Moon 1225 (costs and
 growth 1.15 unchanged). Building milestones start at 10 (`D.buildingMilestones` = 10/25/50/100/150/200, then every
 100) and Eggs no longer emit `'milestone'` (they produce nothing, so their count milestones never did anything).
-Ember kilns keep the old curve: `D.kilnMilestones` = 25/50/100/150/200, then every 100, via
-`E.milestoneMult('kiln', n)` and `E.nextMilestone('kiln', n)` (so Ember balance is unchanged).
+Dragon Rank gives no gold/s of its own any more (the old +5% per rank 7..12 is gone; rank 7 opens the Mines and
+ranks 7..12 give First Light): the `'rank'` source only turns on the ×8 streaks.
 
 `stats(state)` also returns, besides the v1 fields: `M` (the clamped accumulator), `streakRamp`,
 `streakBonus`, `offlineMult`. `E.mods(state)` is `stats(state).M`.
@@ -197,14 +196,10 @@ mission done-flags update. Also runs once per `offline()` sub-step with `isOffli
 - 5 throws switch the hook off (logged).
 
 ```js
-// ember.js: kilns produce embers live and offline
-var acc = 0;
-E.addTickHook('ember', function (s, dt, isOffline) {
-  if (!s.lore || !s.lore.wake_ember) return;
-  var rate = HOARD.ember.rate(s);                      // your own pure function
-  s.ember.embers += rate * dt * (isOffline ? smoulderMult(s) : 1);
-  s.ember.earned += rate * dt;
-  acc += dt; if (acc > 0.5) { acc = 0; E.dirty(); }    // the warmth mod reads ember.earned
+// mines.js: the Mines open for good at Dragon Rank 7 or with Call the Deep (lore wake_ember), then dig every tick
+E.addTickHook('mines', function (s, dt, isOffline) {
+  if (!HOARD.mines.isOpen(s)) { if (!(s.rank >= 7 || (s.lore && s.lore.wake_ember >= 1)) || !HOARD.mines.open(s)) return; }
+  HOARD.mines.advance(s, dt, isOffline);   // the exact chain over dt; Night Shift doubles the Ore while away
 });
 ```
 
@@ -225,8 +220,6 @@ Restore or seed what your module keeps, for example:
 ```js
 E.addSleepHook('lore', function (s, prev, reason) {
   var L = s.lore || {};
-  if (L.keep_claws) ['claws1','claws2','claws3','claws4','scales1','scales2','scales3']
-    .forEach(function (id) { if (prev.upgrades[id]) s.upgrades[id] = true; });
   var sg = [0, 500, 5e4, 5e6, 5e8][Math.min(4, L.start_gold || 0)];
   if (sg) E.earn(s, sg, 'lore');          // or s.gold = sg (earn also counts it toward Legend)
   if (L.start_rank) s.rank = Math.max(s.rank, L.start_rank >= 2 ? 5 : 3);
@@ -234,8 +227,8 @@ E.addSleepHook('lore', function (s, prev, reason) {
 ```
 
 Untouched by a Sleep: cards, chests, legend/legendPts (added), lore, relics, myth*, flags, auto, settings,
-stat, and every module subtree. Modules reset their own subtrees themselves (Ember keeps its state through
-a Sleep; EVENTS has nothing to do).
+stat, and every module subtree. Modules reset their own subtrees themselves (the Mines keep their state through
+a Sleep and keep a quarter of Ore and miners through an Ascend).
 
 **Ascend (LORE)**: do your own bookkeeping, then call `E.resetRun(state, 'ascend', between?)`:
 
@@ -264,10 +257,10 @@ default `{}` is a free-form map (all JSON-safe saved entries kept). Saved keys y
 too (forward compatible). Non-finite numbers become defaults.
 
 ```js
-E.addStateDefaults('ember', function () {
-  return { awake: false, embers: 0, earned: 0, kilns: [0, 0, 0, 0], breaths: {}, seen: false };
+E.addStateDefaults('sky', function () {
+  return { on: false, xp: 0, ch: 0, lant: 0 };
 });
-// stricter: E.addStateDefaults('events', defaultsFn, function (saved, defaults) { ...return clean object; });
+// stricter: E.addStateDefaults('mines', defaultsFn, function (saved, defaults) { ...return clean object; });
 ```
 
 - `name` must not be a core key (`gold`, `tiers`, …). The core maps `lore`, `relics`, `flags` and `auto` may
@@ -277,13 +270,97 @@ E.addStateDefaults('ember', function () {
 - `tick()` and `stats()` also add a missing subtree to a live state (hot reload, old state objects).
 - Prefer numbers and booleans. Keep it small (the whole save is written every 10 s).
 
+### 2.6b Load hooks — `E.addLoadHook(name, fn(raw, o))`
+
+One-time save conversions. Every `sanitize()` (each `deserialize`: boot, cloud pull, import) ends by calling the
+load hooks in registration order, after the module subtrees and the unknown top-level keys are in `o` and before
+the missions are rebuilt. `raw` is the migrated raw save (read it, never write it), `o` the sanitized state (write
+here). `o.flags` always exists. Same upsert-by-name and 5-throws-and-off rules as the other hooks.
+
+- **Guard every conversion with a flag in `o.flags`** (set it even when there was nothing to convert), so loading
+  the converted save again converts nothing: a load hook runs on every load.
+- Leave the old subtree alone: with its module gone it survives as an unknown top-level key (an archive, so a
+  rollback can still read it). Never delete player data; convert it into something the player keeps.
+- Events emitted from a load hook fire before the UI and the play log are listening; hand the UI a `_` key on `o`
+  (not saved) instead, and show/log it once from `whenReady`.
+
+Hooks today: `lore-trim` (lore.js, flag `loreTrim1`: Dragon's Hunger takes max(greed, halls, clutches); cut nodes
+refund their Legend), `mines` (mines.js, flag `minesConv`: Ember -> the Mines) and `events-retire` (mines.js, flag
+`eventsConv`: event lairs pay out pending cards + 500 Ore per quest step). Numbers: `SPEC-MINES.md` A1-A4.
+
+```js
+E.addLoadHook('mymod-v2', function (raw, o) {
+  if (o.flags.mymodConv) return;
+  if (raw.oldThing) o.mymod.points += Math.floor(raw.oldThing.coins / 10);
+  o.flags.mymodConv = 1;
+});
+```
+
+### 2.6c The Mines — `HOARD.mines` (js/mines.js)
+
+State `state.mines` = `{ open, openAt, ore, all, peak, units[4], hired[4], forge{id: lv}, depth, hearth, chestN,
+lastTithe[4], nug, offline }` (SPEC-MINES B3). The Mines open for good (rank 7 or Call the Deep = lore `wake_ember`)
+with 3 Pick Crews. A 4-tier chain digs Ore (Crews dig Ore, Carts bring Crews, Borers bring Carts, Delvers bring
+Borers; the tick hook integrates it exactly, live and offline). Borers need Shaft Depth 3, Delvers Depth 5; Depth
+multiplies every miner ×1.25 a level. A hire by hand costs Eggs (`s.tiers[0]`), ×2.5 per hire of a tier; chain-made
+units are free. At each Long Sleep the run's leftover Eggs (the snapshot) recruit miners (the tithe): every open tier
+gets 1 at its first-hire price, +1 per ×1000 above it, at most 3, and recruits never raise the hire price. An Ascend
+keeps 25% of Ore, lifetime Ore, units and hires (nothing is cut while the Mines are shut). The `'mines'` mod source
+applies Forge glow × Ember's Hearth to `gpsMult` and `coinFlat` plus the Forge levels (pans → `coinMult`, chute →
+`spillMult`, anvil → `gustMult`, frenzy → `frenzyMult`; Stoke the Forge never caps and raises the glow's bonus
++10% a level). Deep Chests drop one Deep card per power of ten of Ore dug.
+
+```js
+HOARD.mines.C / TIERS / FORGE / DEEP_CARDS / CHEST_ORDER   // tables (SPEC-MINES B2, tuned in B12)
+HOARD.mines.chain(growth | fn)                     // { cost(base, hired, n), maxFor(base, hired, budget, cap), advance(x, a, dt) }
+HOARD.mines.isOpen(s) / visible(s) / open(s)        // visible = open or Call the Deep owned
+HOARD.mines.ore(s) / all(s) / units(s, k) / hired(s, k) / depth(s)
+HOARD.mines.oreRate(s) / unitEach(s, k) / unitTotal(s, k) / nugValue(s)
+HOARD.mines.glow(s) / glowFor(all, heart, stoke) / hearth(s) / hearthFor(earned, heart)
+HOARD.mines.tierOpen(s, k) / hireCost(s, k, n|'max') / hireMax(s, k, eggs?) / hire(s, k, n|'max') -> bool
+HOARD.mines.tithePreview(s) / titheFor(s, eggs) / lastTithe(s)   // [n0, n1, n2, n3]
+HOARD.mines.titheNext(s, eggs?) -> { k, n, eggs } | null           // the Eggs the next recruit needs
+HOARD.mines.forgeList(s) / forgeCost(s, id) / forge(s, id) / forgeLevel(s, id) / forgeOwned(s)
+HOARD.mines.depthCost(s) / dig(s) / depthMult(d)
+HOARD.mines.spendOre(s, n) -> bool                  // never lowers lifetime Ore (the glow)
+HOARD.mines.nuggets(s, k) -> Ore                    // the cave: k nuggets swiped (also run.nug / stat.nug)
+HOARD.mines.advance(s, dt, offline) / nextChestAt(s) / chestN(s) / affordable(s)
+HOARD.mines.takeOffline(s) -> { ore, sec } | null   // Ore dug while away (not saved), once
+HOARD.mines.takeConversion(s) / takeEventsClosed(s) // one-time load notes for the UI (conversions emit nothing
+                                                    // during deserialize; ui-mines logs and toasts them once)
+```
+
+Events: `E.emit('mines', { type: 'open' | 'tithe' {n, eggs} | 'forge' {id, lv} |
+'depth' {d, opens} | 'chest' {card, n} })`; `hire()` emits `buy { kind: 'miner', id: k, n }`. The UI logs one
+`mines {type:'hire', k, n}` per press or hold, and `mines {type:'away'}`. Sound `minesOpen` plays on open; a hire
+plays `buy` with a pick clink.
+
+### 2.6d Quest kinds — `E.addMissionTemplate(def)`
+
+```js
+E.addMissionTemplate({
+  tpl: 'ore', minRank: 5, weight: 1, act: true, group: 'mines', text: 'Dig {n} Ore',
+  offer: function (s, st) { return HOARD.mines.isOpen(s) && HOARD.mines.oreRate(s) >= 1; },   // false: not drawn
+  make: function (s, m, ctx) { m.base = s.mines.all; m.target = 100; },   // ctx = { T, Ta, roll, st, rate, h2 }
+  cur: function (s, m, st) { return s.mines.all - m.base; },              // progress
+  title: function (m) { return 'Dig ' + HOARD.fmt(m.target) + ' Ore'; }
+});
+```
+
+- Core tpl ids (building, tier, earn, coins, streak, treasures, gusts, gps) cannot be replaced; `make` and `cur` are
+  required. Registering pushes the template into `D.missionTemplates` (so tools see it) and the engine's index.
+- `act: true` = an activity quest (one in the slots at a time; sized from the quest pace through `ctx.Ta`). Others
+  are gold quests and feed the quest pace (`notePace`). A `group` holds at most one quest in the 3 slots.
+- Saved quests keep `uid, tpl, key, target, base, done, T, t0, t1`; a quest of a registered tpl survives load with
+  `key` as saved, so keep anything else in `key` / `base`. A `make` that throws turns the quest into an Earn quest.
+
 ### 2.7 Cards — `E.registerCards(list)`
 
 ```js
 E.registerCards([{
   id: 'obsidianheart', name: 'Obsidian Heart', rarity: 'legendary',   // common|rare|epic|legendary
   group: 'volcano',               // free text; UI may group/filter by it (cardInfo returns it)
-  chest: false,                   // REQUIRED for event cards: never drops from normal chests
+  chest: false,                   // REQUIRED for Deep cards: never drops from normal chests
   flavor: 'Still warm after a thousand years.',
   describe: function (lv) { return 'All gold x' + (1 + 0.3 * Math.max(1, lv)).toFixed(1) + '.'; },
   mod: function (s, M, lv) { M.allMult *= 1 + 0.3 * lv; }      // called only when level >= 1
@@ -291,7 +368,8 @@ E.registerCards([{
 ```
 
 - Appended to `HOARD.data.cards`. The Hoard tab grid, `cardInfo`, save sanitizing and the `cards` mod source
-  pick it up automatically (20 v1 + 9 event cards = 29). Re-registering the same id replaces it.
+  pick it up automatically (20 v1 + 9 Deep cards = 29; the Deep cards are the old event-lair cards, now
+  registered by js/mines.js with the same ids). Re-registering the same id replaces it.
 - Levels use the v1 thresholds `[1,3,6,10,15,25,40,60,90,140]` (`E.levelFor(copies)`).
 - `mod(s, M, level)` follows the mod-source rules (pure, no stats calls).
 - `E.grantCard(state, id, n=1)` adds copies, marks dirty and emits `'card' {id, n}`. Returns false for
@@ -368,13 +446,13 @@ Typical callback args: `state` = live state, `stats` = `E.stats(state)` (read-on
 
 ```js
 HOARD.ui.addTab({
-  id: 'ember', label: 'Ember', icon: HOARD.ui.icons.ember, order: 70,
-  visible: function (s) { return !!(s.lore && s.lore.wake_ember); },  // tab bar updates <= 5x/s
-  key: function (s) { return 'E' + kilnCount(s); },     // panel part rebuilt when this string changes
+  id: 'mines', label: 'Mines', icon: HOARD.ui.icons.pick, order: 70,
+  visible: function (s) { return HOARD.mines.visible(s); },  // tab bar updates <= 5x/s
+  key: function (s) { return 'M' + (HOARD.mines.isOpen(s) ? 1 : 0); },  // panel part rebuilt when this string changes
   build: function (host, s) {                           // append DOM into host; return a patch fn (optional)
     var ui = HOARD.ui, head = ui.el('div', 'big-num');
-    host.appendChild(ui.secHead("Ember's warmth")); host.appendChild(head);
-    return function (s, st) { ui.setText(head, '×' + ui.multStr(warmth(s))); };
+    host.appendChild(ui.secHead('Ore')); host.appendChild(head);
+    return function (s, st) { ui.setText(head, HOARD.fmt(HOARD.mines.ore(s))); };
   },
   patch: function (s, st, host) { /* optional static patch, also <= 5x/s */ },
   badge: function (s) { return 0; }   // number > 0 = count badge, true = dot, 0/false = none
@@ -382,7 +460,7 @@ HOARD.ui.addTab({
 ```
 
 - Existing tabs and orders: `lair` 10, `brood` 20, `quests` 30, `hoard` 40, `legend` 60 (moon icon; v1 Sleep).
-  The Ember tab should use **order 70** (6th, last). The bar fits 6 tabs at 360 px (labels ≤ 7 characters).
+  The Mines tab uses **order 70** (6th, last). The bar fits 6 tabs at 360 px (labels ≤ 7 characters).
 - `build(host, state)` may return: a function (patch), `{ patch }`, or v1 style `{ root, patch }` (root is
   appended for you).
 - Patches run at most 5×/s, plus immediately after a buy or claim. Keep them cheap. Use the `setText/setCls/...`
@@ -411,9 +489,9 @@ header replaces `legendinfo`, call `HOARD.ui.removeSection('legend', 'legendinfo
 to the tab's badge (numbers summed, `true` = dot).
 
 ```js
-HOARD.ui.addSection('quests', { id: 'eventBanner', order: -10,           // above the Quests content (tab build = 0)
-  visible: function (s) { return HOARD.events.active(s); },
-  build: function (host, s) { /* banner card; button opens the lair sheet */ } });
+HOARD.ui.addSection('quests', { id: 'myBanner', order: -10,              // above the Quests content (tab build = 0)
+  visible: function (s) { return HOARD.mines.isOpen(s); },
+  build: function (host, s) { /* banner card; a button opens a sheet */ } });
 ```
 
 ### 3.3 Settings rows — `ui.addSetting({ id, order, build(host, state) })`
@@ -439,11 +517,12 @@ HOARD.ui.addSetting({ id: 'stats', order: 40, build: function (host) {
 
 ### 3.4 Top-bar chips — `ui.addChip({ id, order, visible(state, stats), text(state, stats), onPress?, cls? })`
 
-Appended after the v1 chips (gold/s, streak, Frenzy, Ember, Legend). Visibility and text update ≤5×/s. With
+Appended after the v1 chips (gold/s, Nest, streak, Frenzy, Ember Touch, Legend). Visibility and text update ≤5×/s. With
 `onPress` the chip is a button (single press, large hit area). `cls` adds classes (existing looks: `legend`
-purple, `frenzy`, `ember`, `streak`). Keep text short ("Volcano Lair · 2d 14h", "Auto").
+purple, `frenzy`, `ember`, `streak`). Keep text short ("Auto"). The top bar today is gold/s · Nest · Legend · Auto, and every chip must
+end at least 8 px inside a 360 px screen (smoke.cjs checks it on the live save).
 Optional `front(state, stats)`: while it returns true the chip moves right after gold/s, ahead of the built-in
-chips (the event chip does this during a swipe rush, so the streak chip never pushes it off a 360 px screen).
+chips (for a chip that matters only while the player swipes, so the streak chip never pushes it off screen).
 
 ### 3.5 Lair/Brood row hooks — `ui.addRowExtra(kind, fn(slotEl, id, state, cardEl))`
 
@@ -496,7 +575,7 @@ Reusable classes: `.card`, `.card.locked`, `.row`, `.grow`, `.name`, `.sub`, `.h
 `.toggle-row`, `.switch`, `.chip`, `.r-common…r-legendary` (sets `--rc`), `.tcard`, `.grid`, `.cost`
 (`.c-gold`, `.c-min`, `.short`).
 
-`ui.icons`: `lair brood quests hoard legend moon ember flame gear chest lock check star scroll chart sound
+`ui.icons`: `lair brood quests hoard legend moon pick flame gear chest lock check star scroll chart sound
 mute clock auto volcano snow wave plus back` (24×24 stroke SVG strings, currentColor; set the size with CSS).
 
 Helpers (same as the v1 panels):
@@ -520,11 +599,11 @@ ui.copyText(text, textareaFallback?, okToastTitle?)   // clipboard in the click,
 ui.state()  ui.currentTab()  ui.setTab(id)  ui.refresh() /*rebuild everything*/  ui.markDirty() /*patch next frame*/
 ```
 
-Hold-to-buy example (kilns):
+Hold-to-buy example (minion tiers):
 
 ```js
 var b = ui.buyButton();
-ui.bindHold(b, function () { var s = ui.state(); return HOARD.ember.buyKiln(s, k, ui.buyAmt(s)); });
+ui.bindHold(b, function () { var s = ui.state(); return HOARD.engine.buyTier(s, i, ui.buyAmt(s)); });
 ```
 
 ---
@@ -537,6 +616,7 @@ HOARD.cave.removeLayer(id)
 HOARD.cave.addSfxHook(fn(name, data))
 HOARD.cave.anchor(name) -> { x, y, cx, cy }
 HOARD.cave.metrics() -> { w, h, dpr, unit, dk, baseY, peakY, pileW, pileH, coinR, reducedMotion, inited }
+HOARD.cave.nugCount() / nuggets() -> [[x, y]]    // Ore nuggets on screen (the Mines: 1 coin in 8, at most 6)
 HOARD.cave.float(x, y, text, big?, color?)    // floating label like the "+1.2K" numbers
 HOARD.cave.burst(x, y, n, 'star'|'spark')     // particle burst (pooled, capped)
 // Starfall hooks (js/ui-sky.js uses them; any module may)
@@ -561,13 +641,19 @@ HOARD.cave.setDragonDecor(fn(g, part, clock, reducedMotion) | null)
   (left/right floor nooks clear of the pile), `'streak'` (streak meter), `'finger'` (current touch, else
   center), `'gustBtn'` (Gust button center). `x,y` are canvas-local CSS px. `cx,cy` are viewport coordinates.
 - The cave stays v1 for swiping: never add tap targets to the canvas.
+- **Ore nuggets** (SPEC-MINES B6): while `HOARD.mines.isOpen(state)`, a spilled coin is a blue nugget with
+  probability 1/8 (at most 6 on screen). A nugget pays like a coin and also digs Ore: swipes and gusts collect it, the
+  frame's nuggets go to `HOARD.mines.nuggets(state, k)` and float "+X Ore" in `#9fc3d9`. Nuggets never merge, are
+  never merge targets, and the broom kobold leaves them. A gust fired inside `E.automated` (Restless Wings) leaves
+  them too (auto-gust counts `coinCount() - nugCount()`), so only the player's swipes and own gusts take Ore. A
+  resting nugget slides to the inner side of the `#gust` / `#skybtn` buttons and stays 1.3 r from the edges.
 - **Swipe hooks**: `fn(px, py, x, y, t, strokeSeq)` runs for every swipe segment (previous point -> new point, canvas
   CSS px, `t` = event ms) in `processPoint`, after the coins and the treasure. Moves under 0.5 px never reach it, so
   a press without movement never catches anything. `strokeSeq` goes up by one at each finger-down (a twin caught
   "in one stroke" = same `strokeSeq`). Each call is in try/catch; a hook that throws 5 times is dropped. No-ops in
   Node.
 - **`setHudDim(a)`** fades the streak meter in the top-left corner (alpha × a); other top-of-cave HUD layers read
-  `hudDim()` (the event lair's rush pill does). A Starfall dims it to 0.3 so the stars entering at the top stay
+  `hudDim()`. A Starfall dims it to 0.3 so the stars entering at the top stay
   visible, and always restores 1 (finish, abort). The normal coin spill is never paused: a Starfall is gold-neutral
   because stars pay no gold, not because the spill stops.
 - **`setDragonScale(k)`** grows the dragon (1..1.25): it is drawn at `dk·k`, and `anchor('dragon')`, the coin keep-out
@@ -620,8 +706,9 @@ HOARD.log.entries() / .count() / .text(n) / .totals()
 - Logged automatically: session start/end/resume (a new session after 5 min hidden), migrate, offline
   returns, snapshots every 5 min of active play (gold, gps, rank, earnedRun, legend, legendPts, sleeps),
   first purchase of each building/tier per run, upgrades, rank, unlock, milestone, chest, sleep, lore, myth,
-  event, and a **run summary** at each Sleep/Ascend (`'run'`: active vs wall seconds, Legend gained, rank,
-  earned, building counts, lore bought this run).
+  mines (open, conv, eventsConv, tithe, forge, depth, chest, hire, away), `tab {id}` (each tab change, from ui.js), `sheet {id}` (each sheet opened: `o.id`, else `o.cls`, else its heading), and a **run summary** at each Sleep/Ascend (`'run'`: active vs wall seconds, Legend gained, rank,
+  earned, building counts, lore bought this run). While the Mines are open, `snap` and `run` also carry `ore`,
+  `oreRate`, `units` and `depth`.
 - Active seconds = page visible and input in the last 60 s. Swipe seconds = finger down and moving on the cave.
 - Storage: localStorage `hoard.log.v1` (last 600). Cloud: `playtest/s<startEpochMs>` docs
   `{ startedAt, updatedAt, version, part, entries ≤250, totals }`, then `…-2` and on. One write at a time,
@@ -635,7 +722,7 @@ HOARD.log.entries() / .count() / .text(n) / .totals()
 ## 6. Gotchas checklist
 
 - Engine-side modules must load in Node: no `window`, `document`, `localStorage` or `Audio`. Use `globalThis`.
-  `tools/save-compat.cjs` loads lore/events/ember in Node and replays the v1 fixtures through them.
+  `tools/save-compat.cjs` loads lore/mines/sky in Node and replays every fixture through them.
 - Never call stats-reading engine functions inside a mod source or card `mod` (infinite recursion).
 - After changing something a mod source reads outside a tick, call `E.dirty()`.
 - Never `Math.random` for schedules (events) or mission-like generation. Use `E.util.hash32(a, b)` or dates.

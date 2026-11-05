@@ -36,9 +36,15 @@ function noBad(s, label) {
 // ---------------------------------------------------------------- content
 check(!!L && typeof L.buy === 'function', 'HOARD.lore exists');
 const specIds = ['auto_dig', 'auto_build', 'auto_brood', 'auto_quest', 'auto_chest', 'auto_gust', 'auto_upg', 'auto_sleep',
-  'start_gold', 'keep_claws', 'keep_broom', 'start_rank', 'start_brood',
-  'greed', 'halls', 'clutches', 'talons', 'magpie', 'dreams', 'watch', 'bargain', 'wake_ember', 'myth_gate'];
+  'start_gold', 'start_rank',
+  'greed', 'talons', 'magpie', 'dreams', 'watch', 'wake_ember', 'myth_gate'];
 specIds.forEach(id => check(!!L.node(id), 'node ' + id + ' exists'));
+// SPEC-MINES A3/A4: greed / halls / clutches merged into Dragon's Hunger (id greed); bargain and three head starts cut
+check(L.nodes.length === specIds.length, 'exactly ' + specIds.length + ' Lore nodes (' + L.nodes.length + ')');
+['halls', 'clutches', 'bargain', 'keep_claws', 'keep_broom', 'start_brood'].forEach(id => check(!L.node(id), 'cut node ' + id + ' is gone'));
+check(L.node('greed').name === "Dragon's Hunger" && [0, 1, 2, 3].map(l => L.costAt(L.node('greed'), l)).join() === '6,24,96,384', "Dragon's Hunger costs 6, 24, 96, 384");
+check(L.node('wake_ember').name === 'Call the Deep' && L.costAt(L.node('wake_ember'), 0) === 12 && L.node('wake_ember').branch === 'unlock', 'wake_ember is Call the Deep (12, unlock)');
+check(L.relic('r_ember').name === 'Deep Veins' && L.relicCost(E.newState(), 'r_ember') === 2, 'r_ember is Deep Veins (2 Myth)');
 ['r_legend', 'r_start', 'r_keep', 'r_cards', 'r_ember', 'r_time'].forEach(id => check(!!L.relic(id), 'relic ' + id + ' exists'));
 check(L.nodes.filter(n => !n.req && L.costAt(n, 0) <= 2).length >= 3, 'at least 3 first nodes cost 1-2 Legend');
 check(L.nodes.every(n => typeof n.desc === 'function' && L.describe(n.id, 1).length > 5), 'every node describes itself');
@@ -60,13 +66,13 @@ check(L.node('greed').max === 15 && L.node('talons').max === 3 && L.node('start_
   check(!L.canBuy(s, 'auto_upg'), 'auto_upg locked without auto_build');
   check(L.buy(s, 'auto_build') && L.level(s, 'auto_build') === 1 && s.legendPts === 2, 'auto_build after auto_dig (6)');
   check(Math.abs(E.stats(s).gps - gps0) < 1e-9, 'Legend passive bonus unchanged by spending');
-  s.legendPts = 1e9;
+  s.legendPts = 1e10;
   for (let i = 0; i < 40; i++) L.buy(s, 'greed');
   check(L.level(s, 'greed') === 15 && L.cost(s, 'greed') === null, 'greed caps at 15');
-  check(L.buy(s, 'wake_ember') && s.lore.wake_ember === 1, 'wake_ember sets state.lore.wake_ember = 1');
+  check(L.buy(s, 'wake_ember') && s.lore.wake_ember === 1, 'Call the Deep sets state.lore.wake_ember = 1');
   // garbage levels
-  const g = fresh(); g.lore = { greed: 'x', halls: -3, clutches: NaN, dreams: 2.7, talons: Infinity };
-  check(L.level(g, 'greed') === 0 && L.level(g, 'halls') === 0 && L.level(g, 'clutches') === 0 && L.level(g, 'dreams') === 2, 'garbage levels read as 0 / floored');
+  const g = fresh(); g.lore = { greed: 'x', watch: -3, magpie: NaN, dreams: 2.7, talons: Infinity };
+  check(L.level(g, 'greed') === 0 && L.level(g, 'watch') === 0 && L.level(g, 'magpie') === 0 && L.level(g, 'dreams') === 2, 'garbage levels read as 0 / floored');
   let threw = false; try { E.stats(g); L.cost(g, 'talons'); L.anyAffordable(g); E.tick(g, 1); } catch (e) { threw = e; }
   check(!threw, 'garbage lore does not throw (' + threw + ')');
   check(!L.buy(null, 'greed') && !L.buy(s, 'nope') && L.cost(s, 'nope') === null, 'unknown ids / null state are safe');
@@ -79,18 +85,19 @@ check(L.node('greed').max === 15 && L.node('talons').max === 3 && L.node('start_
   s.earnedRun = 4e8; E.dirty();
   const a = E.stats(s), cw = a.coinWorth, gps = a.gps, cost = E.buildingCost(s, 'digger', 1).gold, leg = E.legendOnSleep(s);
   const cap = a.offlineCapHours, tr = a.M.treasureFreq, egg = a.tierRates[0];
-  s.lore = { greed: 2, halls: 2, clutches: 2, bargain: 2, dreams: 2, watch: 2, talons: 1, magpie: 2 };
+  s.lore = { greed: 2, dreams: 2, watch: 2, talons: 1, magpie: 2 };
   E.dirty();
   const b = E.stats(s);
-  check(b.coinWorth > cw * 1.4, 'greed raises coin worth (' + (b.coinWorth / cw).toFixed(2) + 'x)');
-  check(Math.abs(b.gps / gps - 1.5) < 1e-6, 'halls 2 = building gold/s x1.5 (' + (b.gps / gps) + ')');
-  check(b.tierRates[0] > egg * 1.4, 'clutches raise minion output');
-  check(Math.abs(E.buildingCost(s, 'digger', 1).gold / cost - 0.81) < 1e-6, 'bargain 2 = cost x0.81');
+  check(b.coinWorth > cw * 1.4, 'Hunger raises coin worth (' + (b.coinWorth / cw).toFixed(2) + 'x)');
+  check(Math.abs(b.gps / gps - 1.5) < 1e-6, 'Hunger 2 = building gold/s x1.5 (' + (b.gps / gps) + ')');
+  check(Math.abs(b.M.tierMult[1] - 1.5) < 1e-9 && Math.abs(b.M.tierMult[4] - 1.5) < 1e-9 && b.tierRates[0] > egg * 1.4, 'Hunger 2 = minion output x1.5');
+  check(Math.abs(b.M.coinMult - 1.5) < 1e-9, 'Hunger 2 = coin worth x1.5');
+  check(Math.abs(E.buildingCost(s, 'digger', 1).gold / cost - 1) < 1e-9, 'no Lore lowers building cost any more');
   check(E.legendOnSleep(s) > leg, 'dreams raise Legend gain (' + leg + ' -> ' + E.legendOnSleep(s) + ')');
   check(b.offlineCapHours === cap + 8 && Math.abs(b.offlineMult - 1.15 * 1.15) < 1e-9, 'watch 2: +8h cap, x1.3225 offline');
   check(b.M.streakHigh === true && b.streakRamp === 1.5, 'talons 1: x8 cap and 1.5x ramp');
   check(Math.abs(b.M.treasureFreq / tr - 1.5) < 1e-9 && b.M.frenzyDurAdd >= 16, 'magpie 2: treasures +50%, Frenzy +16s');
-  const e = L.effect(s, 'halls');
+  const e = L.effect(s, 'greed');
   check(e && e.now === '×1.5' && e.next === '×1.75', 'effect() now/next strings (' + JSON.stringify(e) + ')');
   // Myth multiplier + relics
   s.myth = 2; s.relics = { r_legend: 1, r_cards: 1, r_time: 1 }; E.dirty();
@@ -105,19 +112,19 @@ check(L.node('greed').max === 15 && L.node('talons').max === 3 && L.node('start_
 {
   const s = fresh();
   s.legend = 50; s.legendPts = 200;
-  ['start_gold', 'start_gold', 'keep_claws', 'keep_broom', 'start_rank', 'start_brood'].forEach(id => check(L.buy(s, id), 'buy ' + id));
+  ['start_gold', 'start_gold', 'start_rank'].forEach(id => check(L.buy(s, id), 'buy ' + id));
   s.upgrades.claws1 = true; s.upgrades.scales1 = true; s.upgrades.broom1 = true; s.upgrades.wings1 = true;
   s.earnedRun = 7e7; s.gold = 1e6; s.buildings.digger = 30; s.rank = 6; s.chests = 2; s.cards = { [D.cards[0].id]: 3 };
   s.run.playActive = 5000;
   const g = E.sleep(s);
   check(g === 6 && lastEv('sleep') === 6, 'sleep gains floor(3.2 * cbrt(7)) = 6 Legend');
-  check(s.legend === 56 && s.legendPts === 200 - 1 - 4 - 3 - 3 - 5 - 4 + 6, 'Sleep adds gain to legend and legendPts (' + s.legend + '/' + s.legendPts + ')');
+  check(s.legend === 56 && s.legendPts === 200 - 1 - 4 - 5 + 6, 'Sleep adds gain to legend and legendPts (' + s.legend + '/' + s.legendPts + ')');
   check(s.gold === 5e4, 'Buried Cache II: run starts with 50K gold (' + s.gold + ')');
   check(s.rank === 3, 'Old Renown I: run starts at rank 3');
-  check(s.upgrades.claws1 && s.upgrades.scales1 && s.upgrades.broom1 && !s.upgrades.wings1, 'claws/scales/broom kept, wings reset');
-  check(s.tiers[0] === 300 && s.tiers[1] === 25 && s.buildings.digger === 0, 'Nest Egg: 300 Eggs + 25 Wyrmlings');
+  check(!s.upgrades.claws1 && !s.upgrades.scales1 && !s.upgrades.broom1 && !s.upgrades.wings1, 'every upgrade resets (Lair Steward re-buys them)');
+  check(s.tiers[0] === 0 && s.tiers[1] === 0 && s.buildings.digger === 0, 'the brood starts empty');
   check(s.chests === 3 && s.cards[D.cards[0].id] === 3, 'cards and chests kept (+1 chest)');
-  check(L.level(s, 'start_gold') === 2 && L.level(s, 'keep_claws') === 1, 'lore kept through Sleep');
+  check(L.level(s, 'start_gold') === 2 && L.level(s, 'start_rank') === 1, 'lore kept through Sleep');
   check(s.missions.length === 3, 'missions regenerated');
   noBad(s, 'sleep');
   // head start bought early in a run applies at once
@@ -332,7 +339,7 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
   check(!L.canAscend(s) && L.ascend(s) === 0, 'no Ascend without The First Myth');
   ['auto_dig', 'auto_build', 'auto_quest', 'wake_ember', 'myth_gate'].forEach(id => L.buy(s, id));
   for (let i = 0; i < 8; i++) L.buy(s, 'greed');
-  L.buy(s, 'start_gold'); L.buy(s, 'keep_claws');
+  L.buy(s, 'start_gold'); L.buy(s, 'start_rank');
   check(L.canAscend(s) && L.mythOnAscend(s) === 1, 'Ascend at the need gives 1 Myth');
   s.legend = need * 3; check(L.mythOnAscend(s) === 2, 'x3 beyond the need gives 2');
   s.legend = need * 9; check(L.mythOnAscend(s) === 3 && L.mythNextAt(s) === need * 27, 'x9 gives 3, next at x27');
@@ -343,8 +350,8 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
   check(g === 1 && lastEv('myth') === 1, "Ascend returns gained Myth and emits 'myth'");
   check(s.legend === 0 && s.legendPts === 0 && s.myth === 1 && s.mythPts === 1 && s.myths === 1, 'Ascend: Legend reset, Myth +1');
   check(L.level(s, 'auto_dig') && L.level(s, 'auto_build') && L.level(s, 'auto_quest'), 'automation kept');
-  check(s.lore.wake_ember === 1 && L.level(s, 'myth_gate') === 1, 'unlocks kept (Ember stays awake)');
-  check(!L.level(s, 'greed') && !L.level(s, 'start_gold') && !L.level(s, 'keep_claws'), 'power and head start reset');
+  check(s.lore.wake_ember === 1 && L.level(s, 'myth_gate') === 1, 'unlocks kept (Call the Deep stays)');
+  check(!L.level(s, 'greed') && !L.level(s, 'start_gold') && !L.level(s, 'start_rank'), 'power and head start reset');
   check(s.cards[D.cards[1].id] === 6 && s.chests >= 4 && s.sleeps === 9 && s.stat.coins === 1234, 'cards, chests, sleeps, stats kept');
   check(s.buildings.digger === 0 && s.gold < 1e6 && s.rank === 1, 'run reset');
   check(L.mythNeed(s) === need * L.MYTH.grow, 'next Myth needs x' + L.MYTH.grow);
@@ -358,11 +365,30 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
   s.earnedRun = 1e7; E.sleep(s);
   check(s.rank === 5 && s.buildings.well === 10 && s.buildings.moon === 0, 'Ancestral Lair after Sleep: rank 5, 10 of each unlocked');
   // r_keep keeps 25% of power through Ascend
-  s.legendPts = 1e9; s.legend = L.mythNeed(s); for (let i = 0; i < 9; i++) L.buy(s, 'halls'); L.buy(s, 'talons'); L.buy(s, 'start_gold');
+  s.legendPts = 1e9; s.legend = L.mythNeed(s); for (let i = 0; i < 9; i++) L.buy(s, 'greed'); L.buy(s, 'talons'); L.buy(s, 'start_gold');
   L.ascend(s);
-  check(L.level(s, 'halls') === 2 && !L.level(s, 'talons') && !L.level(s, 'start_gold'), 'Unfading Lore keeps floor(25%) of Power');
+  check(L.level(s, 'greed') === 2 && !L.level(s, 'talons') && !L.level(s, 'start_gold'), 'Unfading Lore keeps floor(25%) of Power');
   check(s.myths === 2 && L.mythNeed(s) === need * L.MYTH.grow * L.MYTH.grow, 'need grows per Ascend');
   noBad(s, 'myth');
+}
+
+// ---------------------------------------------------------------- Lore trim on load (SPEC-MINES A3/A4)
+{
+  const raw = JSON.parse(E.serialize(fresh()));
+  const conv = lore => E.deserialize(JSON.stringify(Object.assign({}, raw, { legendPts: 100, lore })));
+  const a = conv({ greed: 2, halls: 6, clutches: 4, dreams: 1 });
+  check(a.lore.greed === 6 && a.lore.halls === undefined && a.lore.clutches === undefined && a.lore.dreams === 1 && a.legendPts === 100, 'greed 2 / halls 6 / clutches 4 -> Hunger 6, nothing refunded');
+  const b = conv({ bargain: 5, keep_claws: 1, keep_broom: 1, start_brood: 2 });
+  check(b.legendPts === 100 + 1364 + 3 + 3 + 24 && ['bargain', 'keep_claws', 'keep_broom', 'start_brood'].every(id => b.lore[id] === undefined), 'cut nodes refund 1364 + 3 + 3 + 24 Legend (' + b.legendPts + ')');
+  const c = conv({ bargain: 1, start_brood: 1 });
+  check(c.legendPts === 100 + 4 + 4, 'bargain 1 + Nest Egg 1 refund 4 + 4');
+  const d = E.deserialize(E.serialize(b));
+  check(d.legendPts === b.legendPts && d.flags.loreTrim1 === 1, 'the trim refunds once (a reload pays nothing more)');
+  const e = conv({ greed: 3, halls: 99 });
+  check(e.lore.greed === 15, 'Hunger is capped at its max level');
+  // no effect drops: Hunger 6 lifts coins, building gold/s and minions at least as much as greed 2 / halls 6 / clutches 4
+  const old = 1 + 0.25 * 6, M = E.stats(a).M;
+  check(M.coinMult >= old - 1e-9 && M.gpsMult >= old - 1e-9 && M.tierMult[1] >= old - 1e-9, 'Hunger 6 = x2.5 on coins, gold/s and minions');
 }
 
 // ---------------------------------------------------------------- serialize round-trip
@@ -378,7 +404,8 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
   check(t.legend === 120 && t.legendPts === 40 && t.myth === 3 && t.mythPts === 2 && t.myths === 2, 'legend/myth fields round-trip');
   check(Math.abs(E.stats(t).gps - E.stats(s).gps) < 1e-9 && Math.abs(E.stats(t).coinWorth - E.stats(s).coinWorth) < 1e-9, 'stats identical after reload');
   check(!L.masterOn(t) && !L.keyOn(t, 'b:raid') && L.keyOn(t, 'b:digger') && L.autoSleepPct(t) === 175, 'toggles readable after reload');
-  { const j2 = E.serialize(t); let d = ''; const A = JSON.parse(j), B = JSON.parse(j2); for (const k of Object.keys(A)) if (k !== 'savedAt' && JSON.stringify(A[k]) !== JSON.stringify(B[k])) d += k + ' '; check(!d, 'serialize is stable (' + d + ')'); }
+  // (the first load adds the one-time conversion flags; from then on a save/load changes nothing)
+  { const j1 = E.serialize(t), j2 = E.serialize(E.deserialize(j1)); let d = ''; const A = JSON.parse(j1), B = JSON.parse(j2); for (const k of Object.keys(A)) if (k !== 'savedAt' && JSON.stringify(A[k]) !== JSON.stringify(B[k])) d += k + ' '; check(!d, 'serialize is stable (' + d + ')'); }
 }
 
 // ---------------------------------------------------------------- v1 fixtures
@@ -411,18 +438,28 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
 // ---------------------------------------------------------------- with the other engine-side modules loaded
 {
   let H2 = null, err = null;
-  try { H2 = load(['js/events.js', 'js/ember.js', 'js/sky.js']); } catch (e) { err = e; }
-  check(!err && H2 && H2.lore, 'lore loads alongside events.js and ember.js (' + err + ')');
+  try { H2 = load(['js/mines.js', 'js/sky.js']); } catch (e) { err = e; }
+  check(!err && H2 && H2.lore && H2.mines, 'lore loads alongside mines.js and sky.js (' + err + ')');
   if (H2) {
-    const E2 = H2.engine, L2 = H2.lore, s = E2.newState();
+    const E2 = H2.engine, L2 = H2.lore, M2 = H2.mines, s = E2.newState();
     s.legendPts = 50; s.legend = 50;
-    check(L2.buy(s, 'wake_ember') && s.lore.wake_ember === 1, 'wake_ember with ember.js loaded');
+    check(!M2.isOpen(s) && !M2.visible(s), 'the Mines are closed at rank 1 without Call the Deep');
+    check(L2.buy(s, 'wake_ember') && s.lore.wake_ember === 1 && M2.visible(s), 'Call the Deep with mines.js loaded');
+    E2.tick(s, 0.1);
+    check(M2.isOpen(s) && s.mines.units[0] === 3 && s.rank < 7, 'Call the Deep opens the Mines before rank 7 (3 Pick Crews)');
+    const e0 = M2.unitEach(s, 0); s.relics.r_ember = 1;
+    check(Math.abs(M2.unitEach(s, 0) / e0 - 3) < 1e-12, 'Deep Veins (r_ember): miners x3');
+    delete s.relics.r_ember;
+    const r7 = E2.newState(); r7.rank = 7; E2.tick(r7, 0.1);
+    check(M2.isOpen(r7) && !r7.lore.wake_ember, 'Dragon Rank 7 opens the Mines without Call the Deep');
     s.lore.auto_dig = 1; s.gold = 1e5;
     for (let i = 0; i < 200; i++) E2.tick(s, 0.5);
     E2.offline(s, 3600);
     s.earnedRun = 1e8; E2.sleep(s);
     s.legend = L2.mythNeed(s); s.legendPts = 100; L2.buy(s, 'myth_gate');
-    check(L2.ascend(s) >= 1 && s.lore.wake_ember === 1, 'Ascend with Ember awake keeps wake_ember');
+    s.mines.ore = 1000; s.mines.all = 400; s.mines.units[0] = 9; s.mines.forge.pans = 2; s.mines.depth = 1;
+    check(L2.ascend(s) >= 1 && s.lore.wake_ember === 1 && M2.isOpen(s), 'Ascend keeps Call the Deep and the open Mines');
+    check(s.mines.ore === 250 && s.mines.all === 100 && s.mines.units[0] === 2 && s.mines.forge.pans === 2 && s.mines.depth === 1, 'Ascend keeps a quarter of Ore and miners, the Forge and Depth in full (' + JSON.stringify(s.mines) + ')');
     const b = finiteDeep(s, 'state') || finiteDeep(E2.stats(s), 'stats');
     check(!b, 'all modules: no NaN/Infinity (' + b + ')');
   }
@@ -454,7 +491,7 @@ const POST = fs.readFileSync(path.join(root, 'tools/fixtures/v2-player-post-asce
 
 // ---------------------------------------------------------------- v2 final fixes
 {
-  const H4 = load(['js/events.js']), E4 = H4.engine, L4 = H4.lore, X4 = H4.events;
+  const H4 = load(['js/mines.js']), E4 = H4.engine, L4 = H4.lore;
   // milestones: announced once per run, with the threshold passed
   const ms = []; E4.on('milestone', m => ms.push(m));
   const s = E4.newState(); s.rank = 3; s.gold = 1e9; s.tiers = [1e6, 0, 0, 0, 0]; E4.dirty();

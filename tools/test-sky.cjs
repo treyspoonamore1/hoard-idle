@@ -1,4 +1,4 @@
-// Starfall + Growth test (SPEC-V2 "Starfall"): loads data, engine, lore, events, ember and sky in a Node vm and
+// Starfall + Growth test (SPEC-V2 "Starfall"): loads data, engine, lore, mines and sky in a Node vm and
 // exercises js/sky.js: the live save, charges, start/finish/abort, Sleep/Ascend, First Light, Ember's catches, Sky
 // Lanterns, "no power" (stats identical with and without sky.js) and garbage saves. Also checks that ui.js +
 // ui-sky.js load in Node without throwing.
@@ -16,7 +16,7 @@ function badNum(o, p) {
   if (o && typeof o === 'object') for (const k of Object.keys(o)) { const r = badNum(o[k], p + '.' + k); if (r) return r; }
   return null;
 }
-const BASE = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/events.js', 'js/ember.js'];
+const BASE = ['js/data.js', 'js/engine.js', 'js/lore.js', 'js/mines.js'];
 function load(files) {
   let seed = 4242;
   const sb = { console, Date, JSON, Promise, Math: Object.create(Math) };
@@ -27,7 +27,9 @@ function load(files) {
   return sb.HOARD;
 }
 const H = load(BASE.concat(['js/sky.js']));
-const E = H.engine, K = H.sky, X = H.ember, L = H.lore, EV = H.events;
+const E = H.engine, K = H.sky, X = H.mines, L = H.lore;
+// Ember (now at the Forge) watches the sky once the Mines are open: Call the Deep opens them on the next tick
+function callDeep(s) { s.lore.wake_ember = 1; E.tick(s, 0.01); }
 const NOSKY = load(BASE);
 check(!!K && typeof K.start === 'function', 'HOARD.sky exists');
 try { load(BASE.concat(['js/sky.js', 'js/ui.js', 'js/ui-sky.js'])); passes++; } catch (e) { fails++; console.log('FAIL: ui.js + ui-sky.js throw in Node', e); }
@@ -36,9 +38,8 @@ try { load(BASE.concat(['js/ui.js', 'js/ui-sky.js'])); passes++; } catch (e) { f
 const T0 = Date.UTC(2026, 10, 4, 12, 0, 0);
 let NOW = T0;
 K._now = () => NOW;
-EV._now = () => NOW;
 const MIN = 60e3;
-const fixtures = fs.readdirSync(FIX).filter(f => f.endsWith('.json')).sort();
+const fixtures = fs.readdirSync(FIX).filter(f => /^v[12]-.*\.json$/.test(f)).sort();
 const SKY0 = { on: false, xp: 0, ch: 0, at: 0, n: 0, caught: 0, stars: 0, best: 0, bestPct: 0, capAt: 0, eCaught: 0, lant: 0, lit: 0, gift: false };
 const events = [];
 E.on('sky', d => events.push(d));
@@ -52,12 +53,14 @@ function opened(extra) {
 
 // ================================================================ 1. the live save and every fixture
 {
+  // the clock sits after every fixture's savedAt (a sky 'at' in the future is clamped to now on load)
+  NOW = Date.UTC(2026, 10, 6, 12, 0, 0);
   for (const f of fixtures) {
     const raw = fs.readFileSync(path.join(FIX, f), 'utf8').trim();
     const s = E.deserialize(raw), s0 = NOSKY.engine.deserialize(raw);
     const a = JSON.parse(E.serialize(s)), b = JSON.parse(NOSKY.engine.serialize(s0));
     delete a.savedAt; delete b.savedAt;
-    check(JSON.stringify(a.sky) === JSON.stringify(SKY0) || (b.sky !== undefined && JSON.stringify(a.sky) === JSON.stringify(b.sky)), f + ': sky defaults on load');
+    check(JSON.stringify(a.sky) === JSON.stringify(SKY0) || (b.sky !== undefined && JSON.stringify(a.sky) === JSON.stringify(b.sky)), f + ': sky defaults on load ' + JSON.stringify(a.sky) + ' vs ' + JSON.stringify(b.sky));
     const keys = Object.keys(b).filter(k => k !== 'sky');
     const diff = keys.filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
     check(diff.length === 0, f + ': every other top-level key identical with and without sky.js (' + diff.join(',') + ')');
@@ -69,15 +72,16 @@ function opened(extra) {
   NOW = o.savedAt + 5 * MIN;
   const s = E.deserialize(raw);
   const j = JSON.parse(E.serialize(E.deserialize(E.serialize(s))));
-  const diff = Object.keys(o).filter(k => k !== 'savedAt' && JSON.stringify(o[k]) !== JSON.stringify(j[k]));
-  check(diff.length === 0, 'post-Ascend save: after serialize -> deserialize every pre-existing key deep-equals the input (' + diff.join(',') + ')');
+  // flags gain the one-time conversion marks (minesConv, eventsConv, loreTrim1) and keep every old flag
+  const diff = Object.keys(o).filter(k => k !== 'savedAt' && k !== 'flags' && JSON.stringify(o[k]) !== JSON.stringify(j[k]));
+  check(diff.length === 0 && Object.keys(o.flags).every(k => j.flags[k] === o.flags[k]), 'post-Ascend save: after serialize -> deserialize every pre-existing key deep-equals the input (' + diff.join(',') + ')');
   events.length = 0;
   E.offline(s, (NOW - o.savedAt) / 1000);     // what main.js does on load (quiet: no events)
   check(s.sky.on === true && s.sky.ch === 2 && s.sky.gift === true && K.charges(s) === 2 && events.length === 0, 'post-Ascend save: Starfall open with 2 charges after the load catch-up ' + JSON.stringify(s.sky));
   // the same catch-up without sky.js (fresh sandboxes: same random sequence) ends in the same state but for sky
   {
     const A1 = load(BASE.concat(['js/sky.js'])), B1 = load(BASE);
-    A1.sky._now = A1.events._now = B1.events._now = () => NOW;
+    A1.sky._now = () => NOW;
     const a1 = A1.engine.deserialize(raw), b1 = B1.engine.deserialize(raw);
     A1.engine.offline(a1, 300); B1.engine.offline(b1, 300);
     const ja = JSON.parse(A1.engine.serialize(a1)), jb = JSON.parse(B1.engine.serialize(b1));
@@ -86,10 +90,11 @@ function opened(extra) {
     check(d1.length === 0 && ja.sky.on === true, 'post-Ascend save: 5 min catch-up identical with and without sky.js except sky (' + d1.join(',') + ')');
   }
   const s2 = E.deserialize(raw);
+  const ore0 = s2.mines.ore;   // the Mines dig from the first tick on (pass B): the conversion is checked as loaded
   E.tick(s2, 0.1);
   check(s2.legend === 10 && s2.myth === 2 && s2.mythPts === 1 && JSON.stringify(s2.relics) === '{"r_legend":1}', 'post-Ascend save: Legend 10, Myth 2 (1 to spend), relic r_legend 1');
-  check(JSON.stringify(s2.lore) === JSON.stringify(o.lore) && JSON.stringify(s2.cards) === JSON.stringify(o.cards) && s2.events.q === 10, 'post-Ascend save: lore, cards and the Volcano Lair (q 10) unchanged');
-  check(s2.ember.embers >= o.ember.embers && s2.ember.earned >= o.ember.earned, 'post-Ascend save: embers kept (' + Math.round(s2.ember.embers) + ')');
+  check(JSON.stringify(s2.lore) === JSON.stringify(o.lore) && JSON.stringify(s2.cards) === JSON.stringify(o.cards) && JSON.stringify(s2.events) === JSON.stringify(o.events), 'post-Ascend save: lore, cards and the archived Volcano Lair (q 10) unchanged');
+  check(X.isOpen(s2) && ore0 === Math.floor(o.ember.embers / 5) + 5000 && s2.mines.ore > ore0, 'post-Ascend save: embers became Ore (' + Math.round(ore0) + '), and the crews dig more');
   check(s2.sky.on && s2.sky.ch === 2 && events.some(d => d.type === 'open' && d.ch === 2), 'post-Ascend save: a live tick opens the sky and emits open {ch:2}');
   check(K.stage(s2) === 0 && K.stageName(s2) === 'Hatchling' && K.params(s2).cap === 4 && K.params(s2).comets === 0, 'post-Ascend save: Hatchling, cap 4, no comets yet');
   // a fresh player opens at rank 4 (or the first Sleep)
@@ -240,10 +245,10 @@ function opened(extra) {
   const s = opened();
   s.sky.ch = 4; s.sky.at = NOW;
   NOW += 10 * 3600e3; K.accrue(s);
-  check(s.sky.xp === 0 && s.sky.eCaught === 0, 'no Ember catches while Ember sleeps');
-  s.lore.wake_ember = 1; X.wake(s);
-  check(X.isAwake(s), 'Ember awake');
-  const s2 = opened(); s2.lore.wake_ember = 1; X.wake(s2); s2.sky.ch = 3; s2.sky.at = NOW;
+  check(s.sky.xp === 0 && s.sky.eCaught === 0, 'no Ember catches while the Mines are closed');
+  callDeep(s);
+  check(X.isOpen(s), 'Mines open: Ember awake at the Forge');
+  const s2 = opened(); callDeep(s2); s2.sky.ch = 3; s2.sky.at = NOW;
   NOW += 20 * MIN; K.accrue(s2);
   check(s2.sky.ch < 4 && s2.sky.eCaught === 0 && s2.sky.capAt === 0, 'below the cap: no catches');
   NOW += 10 * MIN; K.accrue(s2);
@@ -257,14 +262,14 @@ function opened(extra) {
   NOW += 30 * MIN; K.accrue(s2); NOW += 30 * MIN; K.accrue(s2);
   check(s2.sky.eCaught === 1, 'a new stretch catches again');
   // away: 10 h offline from 2 charges reaches the cap 60 min in and catches 4 (works the same as live)
-  const s3 = opened(); s3.lore.wake_ember = 1; X.wake(s3); s3.sky.ch = 2; s3.sky.at = NOW;
+  const s3 = opened(); callDeep(s3); s3.sky.ch = 2; s3.sky.at = NOW;
   NOW += 10 * 3600e3; E.offline(s3, 10 * 3600);
   check(s3.sky.ch === 4 && s3.sky.eCaught === 4 && s3.sky.xp === 40, 'offline 10 h: cap + 4 Ember catches (' + JSON.stringify({ ch: s3.sky.ch, e: s3.sky.eCaught, xp: s3.sky.xp }) + ')');
-  const s4 = opened(); s4.lore.wake_ember = 1; X.wake(s4); s4.sky.ch = 2; s4.sky.at = NOW;
+  const s4 = opened(); callDeep(s4); s4.sky.ch = 2; s4.sky.at = NOW;
   NOW += 100 * MIN; E.offline(s4, 6000);
   check(s4.sky.eCaught === 1 && s4.sky.xp === 10, 'offline 100 min from 2: cap at 60 min, 1 catch at 90 min');
   // a stage-up while away (Ember's catch tips Hatchling 95 -> Fledgling) is kept for the welcome sheet
-  const s5 = opened(); s5.lore.wake_ember = 1; X.wake(s5); s5.sky.ch = 4; s5.sky.xp = 95; s5.sky.at = NOW; s5.sky.capAt = NOW; K.takeAway(s5);
+  const s5 = opened(); callDeep(s5); s5.sky.ch = 4; s5.sky.xp = 95; s5.sky.at = NOW; s5.sky.capAt = NOW; K.takeAway(s5);
   NOW += 40 * MIN; E.offline(s5, 2400);
   const a5 = K.takeAway(s5);
   check(K.stage(s5) === 1 && a5 && a5.stage === 1, 'offline stage-up noted for the welcome sheet (' + JSON.stringify(a5) + ')');
@@ -273,28 +278,32 @@ function opened(extra) {
 // ================================================================ 7. Sky Lanterns
 {
   NOW = T0 + 5000 * MIN;
-  check(JSON.stringify(K.LANT_COST) === JSON.stringify([2e6, 1e7, 5e7, 2.5e8, 1.25e9]), 'lantern costs exact');
+  check(JSON.stringify(K.LANT_COST) === JSON.stringify([1e5, 1e7, 1e9, 1e11, 1e13]), 'lantern costs exact (Ore, x100 a level)');
   const s = opened();
-  s.ember.embers = 1e10; s.ember.earned = 1e10;
-  check(!K.buyLantern(s), 'refused while Ember is asleep');
-  s.lore.wake_ember = 1; X.wake(s);
-  s.ember.embers = 1e10; s.ember.earned = 1e10;
-  const w0 = X.warmth(s), st0 = JSON.stringify(E.stats(s).M);
+  s.mines.ore = 1e10;
+  check(!K.buyLantern(s) && s.mines.ore === 1e10, 'refused while the Mines are closed');
+  callDeep(s);
+  s.mines.ore = 1e14; s.mines.all = 1e14; E.dirty();
+  const w0 = X.glow(s), st0 = JSON.stringify(E.stats(s).M);
   let spent = 0;
-  for (let i = 0; i < 5; i++) { const c = K.lanternCost(s); const e0 = s.ember.embers; check(K.buyLantern(s) && near(e0 - s.ember.embers, c), 'lantern ' + (i + 1) + ' costs ' + c); spent += c; }
+  for (let i = 0; i < 5; i++) { const c = K.lanternCost(s); const e0 = s.mines.ore; check(K.buyLantern(s) && near(e0 - s.mines.ore, c), 'lantern ' + (i + 1) + ' costs ' + c + ' Ore'); spent += c; }
   check(!K.buyLantern(s) && s.sky.lant === 5 && K.lanternCost(s) === 0, 'level capped at 5');
-  check(s.ember.earned === 1e10 && near(s.ember.embers, 1e10 - spent) && near(X.warmth(s), w0) && JSON.stringify(E.stats(s).M) === st0, 'embers drop, ember.earned and warmth unchanged, no M change');
+  check(s.mines.all === 1e14 && near(s.mines.ore, 1e14 - spent) && near(X.glow(s), w0) && JSON.stringify(E.stats(s).M) === st0, 'Ore drops, lifetime Ore and the glow unchanged, no M change');
   const p = K.params(s);
   check(near(p.slow, 0.85), 'lanterns: stars fall 15% slower at Lv 5');
   s.sky.ch = 2; K.start(s);
   check(near(K.finish(s, { total: 20, caught: 10, base: 10 }).mult, 1.4), 'lanterns: Stardust x1.40 at Lv 5');
-  const poor = opened(); poor.lore.wake_ember = 1; X.wake(poor); poor.ember.embers = 1e6;
-  check(!K.buyLantern(poor) && poor.ember.embers === 1e6, 'refused when embers are short');
-  // the live save can buy 3 straight away
+  const poor = opened(); callDeep(poor); poor.mines.ore = 9e4;
+  check(!K.buyLantern(poor) && poor.mines.ore === 9e4, 'refused when Ore is short');
+  // the post-Ascend save (no lanterns, 52.9M Ore from its embers) can light 2 straight away (1e5 + 1e7)
   const raw = fs.readFileSync(path.join(FIX, 'v2-player-post-ascend.json'), 'utf8');
   const lv = E.deserialize(raw); E.tick(lv, 0.1);
   let n = 0; while (K.buyLantern(lv)) n++;
-  check(n === 3, 'the live save buys 3 lanterns from its embers (' + n + ')');
+  check(n === 2, 'the post-Ascend save buys 2 lanterns from its Ore (' + n + ')');
+  // the live save (2 lanterns lit, 59.4M Ore) digs toward the 3rd (1e9): a goal, not a press on load
+  const my = E.deserialize(fs.readFileSync(path.join(FIX, 'v2-player-myth4.json'), 'utf8')); E.tick(my, 0.1);
+  let n2 = 0; while (K.buyLantern(my)) n2++;
+  check(n2 === 0 && my.sky.lant === 2 && K.lanternCost(my) === 1e9, 'the live save keeps its 2 lanterns; the 3rd costs 1B Ore (' + n2 + ')');
 }
 
 // ================================================================ 8. no power: stats identical with and without sky.js
@@ -342,7 +351,7 @@ function opened(extra) {
   const nos = NOSKY.engine.deserialize(raw);
   check(nos.sky && nos.sky.xp === 777 && nos.sky.lant === 2 && JSON.parse(NOSKY.engine.serialize(nos)).sky.xp === 777, 'without sky.js a saved sky subtree survives');
   // readers are null-safe
-  check(K.on(null) === false && K.stage(null) === 0 && K.charges({}) === 0 && K.nextIn(null) === 0 && K.cap(null) === 4 && K.xpToNext(null) === 100 && K.scales(null) === 0 && K.lanternCost(null) === 2e6 &&
+  check(K.on(null) === false && K.stage(null) === 0 && K.charges({}) === 0 && K.nextIn(null) === 0 && K.cap(null) === 4 && K.xpToNext(null) === 100 && K.scales(null) === 0 && K.lanternCost(null) === 1e5 &&
     K.start(null) === null && K.finish(null, {}) === null && K.abort(null) === false && K.buyLantern(null) === false, 'readers and mutators are null-safe');
   const sc = opened(); sc.sky.xp = 75000 + 3 * 25000 + 10;
   check(K.scales(sc) === 3 && K.progress(sc).max && K.xpToNext(sc) === 25000 - 10, 'Star Scales past Ancient (3)');

@@ -46,6 +46,23 @@
     '.lore-node .lore-slider b { color: var(--ink); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }',
     '.lore-node .lore-dk { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: var(--ink-dim); overflow-wrap: anywhere; }',
     '.lore-node .lore-dk b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }',
+    '.card.lore-autolist { padding: 4px 12px 6px; border-color: rgba(127,194,155,0.35); }',
+    '.lore-al-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }',
+    '.lore-al-head .name { font-size: 16px; }',
+    '.lore-al-n { margin-left: auto; font-size: 13px; color: var(--moss); font-weight: 700; }',
+    '.lore-autolist .toggle-row.lore-al-row { min-height: 44px; border-bottom: 0; border-top: 1px solid var(--line); gap: 8px; }',
+    '.lore-autolist .toggle-row .tl > span { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.15; }',
+    '.lore-autolist .toggle-row .tl small { font-size: 12.5px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }',
+    '.lore-autolist .lore-slider { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 13px; color: var(--ink-dim); min-height: 32px; }',
+    '.lore-autolist .lore-slider input { flex: 1 1 auto; accent-color: var(--r-epic); height: 30px; touch-action: pan-y; min-width: 0; }',
+    '.lore-autolist .lore-slider b { color: var(--ink); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }',
+    '.lore-al-more { border-top: 1px solid var(--line); padding-top: 8px; }',
+    '.lore-al-q { position: relative; flex: none; width: 24px; height: 24px; margin-left: 8px; border-radius: 50%; border: 1px solid var(--line-2); background: var(--rock-2); color: var(--ink-dim); font: inherit; font-size: 13px; font-weight: 700; line-height: 1; padding: 0; cursor: pointer; touch-action: manipulation; }',
+    '.lore-al-q::after { content: ""; position: absolute; inset: -10px; }',
+    '.lore-al-q.on { color: var(--ink); border-color: var(--r-epic); }',
+    '.lore-al-desc { margin: 0 0 8px; font-size: 13px; line-height: 1.4; color: var(--ink-dim); overflow-wrap: anywhere; }',
+    '.lore-al-desc b { color: var(--ink); }',
+    '.lore-autolist .lore-dk { margin: 0; font-size: 12.5px; line-height: 1.35; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
     '.lore-myth { background: linear-gradient(160deg, #3a2a18 0%, var(--rock) 60%, #1d1927 100%); border-color: rgba(255,224,138,0.3); }',
     '.lore-myth .big-num { color: var(--gold-hi); }',
     '.lore-myth p { margin: 0 0 8px; }',
@@ -193,6 +210,89 @@
     return c;
   }
 
+  // ================================================================ owned automation: one card, one 44px row per node
+  function autoList(list, parts) {
+    var c = el('div', 'card lore-autolist');
+    var hd = el('div', 'lore-al-head');
+    var cnt = el('span', 'lore-al-n');
+    add(hd, el('span', 'name', 'Automation'), cnt);
+    c.appendChild(hd);
+    var tgs = [], dk = null;
+    list.forEach(function (n) {
+      var tg;
+      if (n.id === 'auto_sleep') {
+        tg = ui.toggle(n.name, function (s) { return !!(s.auto && s.auto.sleep === true); }, function (s, v) { L.setAuto(s, 'sleep', !!v); }, n.short || '');
+        c.appendChild(tg.row);
+        var sl = el('label', 'lore-slider');
+        var inp = el('input');
+        inp.type = 'range'; inp.min = '50'; inp.max = '300'; inp.step = '25';
+        inp.setAttribute('aria-label', 'Sleep when the Legend gain reaches this share of your Legend');
+        var val = el('b');
+        add(sl, el('span', null, 'when gain ≥'), inp, val);
+        inp.addEventListener('input', function () {
+          var s = S(); if (!s) return;
+          L.setAuto(s, 'sleepPct', Math.max(50, Math.min(300, Math.round(num(inp.value, 100)))));
+          setText(val, L.autoSleepPct(s) + '%');
+        });
+        var nowP = el('p', 'lore-dk');
+        add(c, sl, nowP);
+        dk = { sl: sl, inp: inp, val: val, now: nowP };
+      } else {
+        tg = ui.toggle(n.name, function (s) { return L.keyOn(s, 'n:' + n.id); }, function (s, v) { L.setAuto(s, 'n:' + n.id, v); }, n.short || '');
+        c.appendChild(tg.row);
+      }
+      tg.row.classList.add('lore-al-row');
+      tg.row.title = L.describe(n.id, 1);
+      tgs.push(tg);
+    });
+    // the full descriptions, one press away (a touch screen cannot show row.title; code review #13)
+    // a "?" press in the header shows them under the rows (the collapsed card keeps its height)
+    var more = el('div', 'lore-al-more');
+    more.hidden = true;
+    list.forEach(function (n) {
+      var p = el('p', 'lore-al-desc');
+      add(p, el('b', null, n.name + ': '), document.createTextNode(L.describe(n.id, 1)));
+      more.appendChild(p);
+    });
+    var qb = el('button', 'lore-al-q', '?');
+    qb.type = 'button';
+    qb.setAttribute('aria-label', 'What each automation does');
+    qb.setAttribute('aria-expanded', 'false');
+    qb.addEventListener('click', function () {
+      more.hidden = !more.hidden;
+      qb.setAttribute('aria-expanded', more.hidden ? 'false' : 'true');
+      setCls(qb, 'on', !more.hidden);
+    });
+    hd.appendChild(qb);
+    c.appendChild(more);
+    parts.push(function (s) {
+      var on = 0;
+      for (var i = 0; i < tgs.length; i++) tgs[i].patch(s);
+      list.forEach(function (n) { if (n.id === 'auto_sleep' ? !!(s.auto && s.auto.sleep === true) : L.keyOn(s, 'n:' + n.id)) on++; });
+      setText(cnt, L.masterOn(s) ? on + ' of ' + list.length + ' working' : 'all paused');
+      if (dk) {
+        var dOn = !!(s.auto && s.auto.sleep === true);
+        setHidden(dk.sl, !dOn); setHidden(dk.now, !dOn);
+        if (dOn) {
+          var p = L.autoSleepPct(s);
+          if (document.activeElement !== dk.inp && String(dk.inp.value) !== String(p)) dk.inp.value = String(p);
+          setText(dk.val, p + '%');
+          setText(dk.now, dkNowShort(s));
+        }
+      }
+    });
+    return c;
+  }
+  // one short line for the compact card (the full card's dkNow is longer)
+  function dkNowShort(s) {
+    if (typeof L.autoSleepState !== 'function') return '';
+    var k = L.autoSleepState(s);
+    if (!k.can) return 'Now: below the Sleep threshold';
+    if (k.gain < k.need) return 'Now: +' + fmt(k.gain) + ' of +' + fmt(k.need) + ' Legend';
+    if (k.run < k.warm) return 'Now: +' + fmt(k.gain) + ' ready, sleeps in ' + secs(k.warm - k.run);
+    return 'Now: falling asleep for +' + fmt(k.gain);
+  }
+
   function secs(x) {
     x = Math.max(0, Math.ceil(num(x)));
     return HOARD.fmtTime ? HOARD.fmtTime(x) : x + 's';
@@ -262,13 +362,16 @@
         for (var i = 0; i < nodes.length; i++) k += (L.reqMet(s, nodes[i].id) ? '1' : '0') + (L.cost(s, nodes[i].id) === null ? 'm' : '');
         return k;
       },
-      build: function (host) {
+      build: function (host, s0) {
         var parts = [];
         var wrap = el('div', 'lore-branch');
         var head = ui.secHead(bi === 0 ? 'Lore · ' + b.name : b.name, '');
         add(wrap, head, el('p', 'hint', b.text));
         host.appendChild(wrap);
-        nodes.forEach(function (n) { host.appendChild(nodeCard(n, parts)); });
+        // Automation: the nodes already owned share one compact card of toggle rows; the rest keep full cards
+        var owned = b.id === 'auto' && s0 ? nodes.filter(function (n) { return L.level(s0, n.id) > 0; }) : [];
+        if (owned.length) host.appendChild(autoList(owned, parts));
+        nodes.forEach(function (n) { if (owned.indexOf(n) < 0) host.appendChild(nodeCard(n, parts)); });
         return function (s, st) {
           var own = 0;
           for (var i = 0; i < nodes.length; i++) if (L.level(s, nodes[i].id) > 0) own++;
@@ -288,7 +391,7 @@
     build: function (host) {
       host.appendChild(ui.secHead('Myth', ''));
       var c = el('div', 'card lore-myth');
-      var intro = el('p', 'sub', 'Ascend to become a Myth. Legend, Head start and Power Lore start over; Automation, Unlocks, cards, chests, Ember and Relics stay. Each Myth makes all gold ×1.5 for good.');
+      var intro = el('p', 'sub', 'Ascend to become a Myth. Legend, Head start and Power Lore start over; Automation, Unlocks, cards, chests, Relics and the Mines stay (the Mines keep a quarter of their Ore and miners). Each Myth makes all gold ×1.5 for good.');
       var b = ui.bar();
       var bl = el('div', 'bar-label'), blL = el('span'), blR = el('span');
       add(bl, blL, blR);
@@ -424,7 +527,7 @@
   });
   E.on('lore', function (x) {
     if (!x || x.relic) return;
-    if (x.id === 'start_rank' || x.id === 'start_gold' || x.id === 'start_brood') ui.markDirty();
+    if (x.id === 'start_rank' || x.id === 'start_gold') ui.markDirty();
   });
 
   // flag loreCallout = times shown. After a Sleep it shows once; at boot, a player who still has Legend and no
@@ -512,10 +615,11 @@
     var C = HOARD.cave;
     if (!L.nodeOn(s, 'auto_gust') || !C || typeof C.gust !== 'function' || !E.gustReady(s)) { est.ready = 0; return; }
     est.ready += dt;
-    var coins = typeof C.coinCount === 'function' ? num(C.coinCount()) : 0;
+    // nuggets do not count: the auto-gust leaves them for the player's swipe (js/cave.js), so they must not make it fire
+    var coins = typeof C.coinCount === 'function' ? num(C.coinCount()) - (typeof C.nugCount === 'function' ? num(C.nugCount()) : 0) : 0;
     if (coins >= 8 || est.ready >= 10) {
       var okk = false;
-      // inside E.automated: the coins it pays are not the player's swipe (an event lair's swipe rush ignores them)
+      // inside E.automated: the cave sees inAuto() and leaves the Ore nuggets where they lie
       try { okk = E.automated(function () { return C.gust(); }) !== false; } catch (e) { okk = false; }
       if (okk) est.ready = 0;
     }

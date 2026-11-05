@@ -1,4 +1,4 @@
-// POLISH module test (SPEC-V2 section 4): loads data.js + engine.js (+ lore/events/ember when present) + sound.js +
+// POLISH module test (SPEC-V2 section 4): loads data.js + engine.js (+ lore/mines/sky when present) + sound.js +
 // ui-stats.js in a Node vm. Drives sound.js with a fake AudioContext (graph creation, every sound, throttling,
 // settings, hidden, voice cleanup, engine wiring) and HOARD.statsView against real states: fresh, played,
 // offline(), Long Sleep, serialize/deserialize round-trip and the v1 fixtures.
@@ -20,7 +20,7 @@ function load(files) {
   for (const f of files) vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sb, { filename: f });
   return sb.HOARD;
 }
-const mods = ['js/lore.js', 'js/events.js', 'js/ember.js', 'js/sky.js'].filter(f => fs.existsSync(path.join(root, f)));
+const mods = ['js/lore.js', 'js/mines.js', 'js/sky.js'].filter(f => fs.existsSync(path.join(root, f)));
 const FILES = ['js/data.js', 'js/engine.js'].concat(mods, ['js/sound.js', 'js/ui-stats.js']);
 let H;
 try { H = load(FILES); passes++; } catch (e) { console.log('FAIL: modules throw in Node', e); process.exit(1); }
@@ -133,7 +133,7 @@ function flushAll(ctx, log) { advance(ctx, log, 30); }
 
   // every sound plays with finite params and cleans up
   const names = SND.names;
-  ['coin', 'streakUp', 'gust', 'treasure', 'buy', 'rank', 'sleep', 'chest', 'lore', 'myth', 'emberWake', 'eventStart', 'questDone', 'preview']
+  ['coin', 'streakUp', 'gust', 'treasure', 'buy', 'rank', 'sleep', 'chest', 'lore', 'myth', 'minesOpen', 'questDone', 'preview']
     .forEach(n => check(names.indexOf(n) >= 0, 'sound defined: ' + n));
   const perSound = {};
   for (const n of names) {
@@ -307,7 +307,7 @@ function statsTests() {
   rowsOk(rows, 'fresh');
   check(val(rows, 'fastest') === 'Not yet' && val(rows, 'sleeps') === '0' && val(rows, 'streak') === '×1', 'fresh values');
   check(val(rows, 'cards') === '0/' + H.data.cards.length, 'cards X/' + H.data.cards.length);
-  if (mods.indexOf('js/events.js') >= 0) check(H.data.cards.length === 29, '29 cards with event cards registered');
+  if (mods.indexOf('js/mines.js') >= 0) check(H.data.cards.length === 29, '29 cards with the Deep cards registered');
   rowsOk(SV.thisRun(s), 'fresh run');
   multOk(SV.multipliers(s), s, 'fresh');
   check(SV.multipliers(s).rows.filter(r => !r.neutral).length === 0, 'fresh: every source neutral');
@@ -362,7 +362,7 @@ function statsTests() {
   check(res.rows[0].id === 'legend', 'Legend listed first');
   // lore / myth sources (if LORE loaded): give some levels and check they show up
   if (H.lore && E.modBreakdown(s).some(p => p.name === 'lore')) {
-    s.lore.greed = 2; s.lore.halls = 1; s.lore.bargain = 1; s.myth = 2;
+    s.lore.greed = 2; s.lore.dreams = 1; s.myth = 2;
     E.dirty();
     res = SV.multipliers(s);
     multOk(res, s, 'with lore');
@@ -372,14 +372,14 @@ function statsTests() {
     if (my) check(!my.neutral && my.gold > 1, 'myth row ' + my.goldText);
     s.lore = {}; s.myth = 0; E.dirty();
   }
-  // event cards split from treasure cards
+  // Deep cards (the former event cards) split from treasure cards
   const evCard = H.data.cards.find(c => c.chest === false && typeof c.mod === 'function');
   if (evCard) {
     E.grantCard(s, evCard.id, 3);
     res = SV.multipliers(s);
-    multOk(res, s, 'with event card');
+    multOk(res, s, 'with Deep card');
     const ec = res.rows.find(r => r.id === 'eventcards');
-    check(ec && ec.label === 'Event cards' && !ec.neutral, 'event cards row: ' + (ec && ec.goldText + ' ' + ec.extra.join(',')));
+    check(ec && ec.label === 'Deep cards' && !ec.neutral, 'Deep cards row: ' + (ec && ec.goldText + ' ' + ec.extra.join(',')));
   }
   // frenzy effect line
   E.addEffect(s, 'frenzy', 7, 30);

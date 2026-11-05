@@ -58,8 +58,6 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     broodCoin: 0.5,
     // rank
     maxRank: 12,
-    rankGpsAfter: 6,         // ranks above this give +5% gold/s each
-    rankGpsPer: 0.05,
     chestCardsLow: 2,
     chestCardsHigh: 3,
     chestCardsRank: 6,
@@ -123,7 +121,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
       text: 'Small, tireless, and only slightly dishonest.' },
     { id: 'raid', name: 'Raiding Parties', one: 'Raiding Party', gold: 140, minionTier: 0, minions: 15, gps: 0.6, rank: 2,
       text: 'Kobolds borrow gold from the villages. Forever.' },
-    { id: 'mine', name: 'Gold Mines', one: 'Gold Mine', gold: 1800, minionTier: 1, minions: 4, gps: 3.0, rank: 3,
+    { id: 'mine', name: 'Gold Veins', one: 'Gold Vein', gold: 1800, minionTier: 1, minions: 4, gps: 3.0, rank: 3,
       text: 'Wyrmlings breathe on the rock until it gives up its veins.' },
     { id: 'tower', name: 'Alchemy Towers', one: 'Alchemy Tower', gold: 26000, minionTier: 2, minions: 4, gps: 14, rank: 4,
       text: 'Drake-fire turns lead to gold, and smoke to more smoke.' },
@@ -135,8 +133,6 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
   // 10 / 25 / 50 / 100 / 150 / 200 / 300 / 400 ... (every 100 after 200). Feel pass: the early x2 at 10 gives every
   // new building a quick "x2!" moment; base gold/s is lower to match (Nest warmth carries the growth instead).
   var buildingMilestones = [10, 25, 50, 100, 150, 200];
-  // Ember kilns keep the original curve: 25 / 50 / 100 / 150 / 200, then every 100 (Ember balance unchanged)
-  var kilnMilestones = [25, 50, 100, 150, 200];
 
   // ---------------------------------------------------------------- lair upgrades
   // effect kinds: coinMult, scales (pct of gps per coin), sweep (coins/s), gustCd (seconds),
@@ -205,7 +201,7 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     { id: 'moonlitscale', name: 'Moonlit Scale', rarity: 'common', target: 'offline', flavor: 'Shed in a long and dreamless sleep.',
       describe: function (l) { return 'Gold keeps piling up +' + lv(l) + 'h longer while you are away.'; } },
     // rare (6)
-    { id: 'deeplantern', name: 'Lantern of the Deep Seam', rarity: 'rare', target: 'b:mine', flavor: 'Its flame bends toward veins of gold.', describe: bCard('Gold Mines') },
+    { id: 'deeplantern', name: 'Lantern of the Deep Seam', rarity: 'rare', target: 'b:mine', flavor: 'Its flame bends toward veins of gold.', describe: bCard('Gold Veins') },
     { id: 'alembic', name: 'Ashen Alembic', rarity: 'rare', target: 'b:tower', flavor: 'Whatever goes in, gold comes out. Eventually.', describe: bCard('Alchemy Towers') },
     { id: 'broodbrooch', name: 'Brood-Mother\'s Brooch', rarity: 'rare', target: 't:2', flavor: 'Pinned to the softest scale of a watchful mother.', describe: tCard('Drakes', 'raise Wyrmlings') },
     { id: 'galefeather', name: 'Gale Feather', rarity: 'rare', target: 'gust', flavor: 'Plucked from a storm that thought it was a bird.',
@@ -245,7 +241,6 @@ var HOARD = (globalThis.HOARD = globalThis.HOARD || {});
     tierMilestones: tierMilestones,
     buildings: buildings,
     buildingMilestones: buildingMilestones,
-    kilnMilestones: kilnMilestones,
     upgrades: upgrades,
     treasures: treasures,
     rarities: rarities,

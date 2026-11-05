@@ -254,8 +254,10 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   await hold(loreBtn('Kobold Foremen'), 250);
   const lr1 = await page.evaluate(() => ({ dig: HOARD.state.lore.auto_dig || 0, pts: HOARD.state.legendPts }));
   check(lr1.dig === 1 && Math.abs(lp0 - lr1.pts - 2) < 1e-9, 'Lore purchase: Kobold Foremen (' + lp0 + ' -> ' + lr1.pts + ' Legend)');
-  await hold(loreBtn("Dragon's Greed"), 1200);
-  check(await page.evaluate(() => (HOARD.state.lore.greed || 0) >= 2), "hold-to-buy repeats on a multi-level node (Dragon's Greed lv " + await page.evaluate(() => HOARD.state.lore.greed || 0) + ')');
+  // owned automation shows as one compact card of toggle rows (SPEC-MINES A6)
+  check(await page.evaluate(() => { const c = document.querySelector('#panel .lore-autolist'); return !!c && /Kobold Foremen/.test(c.innerText) && c.querySelectorAll('.lore-al-row .switch').length === 1 && !Array.from(document.querySelectorAll('#panel .lore-node')).some(n => /Kobold Foremen/.test(n.innerText)); }), 'owned Kobold Foremen moves into the compact Automation card');
+  await hold(loreBtn("Dragon's Hunger"), 1200);
+  check(await page.evaluate(() => (HOARD.state.lore.greed || 0) >= 2), "hold-to-buy repeats on a multi-level node (Dragon's Hunger lv " + await page.evaluate(() => HOARD.state.lore.greed || 0) + ')');
   await textOk('legend lore');
   await page.screenshot({ path: SHOTS + '/smoke-legend-lore.png' });
 
@@ -284,39 +286,28 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
   await page.locator('#panel [data-sec="legend.lorehead"] .switch').first().click(); await page.waitForTimeout(250);
   check(await page.evaluate(() => HOARD.lore.masterOn(HOARD.state)), 'master Automation switch back on');
 
-  // --- Ember: Wake Ember lore -> 6th tab, buy a kiln
-  check(!(await page.locator('#tabs [data-tab="ember"]').count()), 'no Ember tab before Wake Ember');
+  // --- Call the Deep (Lore) -> the Mines open before rank 7 -> 6th tab
+  check(!(await page.locator('#tabs [data-tab="mines"]').count()) && !(await page.locator('#tabs [data-tab="ember"]').count()), 'no Mines tab (and never an Ember tab) before Call the Deep');
   await page.evaluate(() => { HOARD.state.legendPts += 12; });
   await page.waitForTimeout(300);
-  await hold(loreBtn('Wake Ember'), 250);
+  await hold(loreBtn('Call the Deep'), 250);
   await page.waitForTimeout(800);
-  check(await page.evaluate(() => HOARD.state.lore.wake_ember === 1 && HOARD.ember.isAwake(HOARD.state)), 'Wake Ember wakes Ember');
-  check(await page.locator('#tabs [data-tab="ember"]').count() === 1, 'Ember tab appears');
-  await tab('ember');
-  const ek0 = await page.evaluate(() => HOARD.state.ember.kilns[0]);
-  await hold(page.locator('#panel .card button.buy').first(), 250);
-  check(await page.evaluate(() => HOARD.state.ember.kilns[0]) > ek0, 'bought a Coal Kiln with embers');
-  check(/warmth/i.test(await panelText()), 'Ember tab shows warmth');
-  await textOk('ember');
-  await page.screenshot({ path: SHOTS + '/smoke-ember.png' });
+  check(await page.evaluate(() => HOARD.state.lore.wake_ember === 1 && HOARD.mines.isOpen(HOARD.state) && HOARD.state.rank < 7), 'Call the Deep opens the Mines');
+  check(await page.locator('#tabs [data-tab="mines"]').count() === 1, 'Mines tab appears');
+  await page.waitForFunction(() => /The Mines open/.test(document.getElementById('toasts').innerText), null, { timeout: 6000 }).catch(() => {});
+  check(/The Mines open/.test(await page.evaluate(() => document.getElementById('toasts').innerText)), '"The Mines open" toast');
+  await tab('mines');
+  check(/Ore/.test(await panelText()) && /Forge glow/.test(await panelText()), 'Mines tab shows Ore and the Forge glow');
+  const fm = await panelText();
+  check(/Shaft Depth 0/.test(fm) && /Pick Crews/.test(fm) && /Ore Carts/.test(fm) && /Reach Shaft Depth 3 to break into Tunnel Borers/.test(fm) && !/Deep Delvers/.test(fm) &&
+    /When you Sleep/.test(fm) && /Gilded Pans/.test(fm) && /\+7 more/.test(fm) && /recruit up to 3/.test(fm), 'fresh Mines: Shaft, Crews and Carts, only the next locked tier, the tithe strip, the 3 cheapest Forge levels');
+  await textOk('mines');
+  await page.screenshot({ path: SHOTS + '/smoke-mines.png' });
 
-  // --- event lair: chip -> full-height sheet, buy a tier-1 unit
-  const chipVis = await page.evaluate(() => { const c = document.querySelector('[data-chip="events"]'); return !!c && !c.hidden && c.textContent; });
-  check(!!chipVis && /Lair|Peak|Ship|Next lair/.test(chipVis), 'event chip visible after a Sleep: "' + chipVis + '"');
-  check(await page.evaluate(() => { const c = document.querySelector('[data-chip="events"]'); return /ev-(volcano|frost|sea|break)|ev-/.test(c.className); }), 'event chip carries its theme class (chip classes hook)');
-  await page.locator('[data-chip="events"]').click(); await page.waitForTimeout(500);
-  check(await page.evaluate(() => !!document.querySelector('#overlay .sheet.ev-sheet')), 'event chip opens the lair sheet');
-  if (await page.evaluate(() => HOARD.events.active(HOARD.state))) {
-    const u0 = await page.evaluate(() => HOARD.state.events.units[0]);
-    await hold(page.locator('#overlay .card.ev-unit button.buy').last(), 250);
-    check(await page.evaluate(() => HOARD.state.events.units[0]) > u0, 'bought a lair tier-1 unit');
-  }
-  await textOk('lair sheet');
-  await page.screenshot({ path: SHOTS + '/smoke-event-sheet.png' });
-  await page.locator('#overlay button').filter({ hasText: 'Close' }).first().click(); await page.waitForTimeout(300);
-  check(!(await ovOpen()), 'lair sheet closes');
+  // --- event lairs are retired: no chip, no Quests banner
+  check(await page.evaluate(() => !document.querySelector('[data-chip="events"]') && !document.querySelector('.ev-chip') && !document.querySelector('[data-sec="quests.eventBanner"]')), 'no event chip, no event banner');
   await tab('quests');
-  check(await page.evaluate(() => !!document.querySelector('[data-sec="quests.eventBanner"]') && document.querySelector('[data-sec="quests.eventBanner"]').innerText.length > 0), 'event banner on the Quests tab');
+  check(await page.evaluate(() => !document.querySelector('[data-sec="quests.eventBanner"]') && !/lair is open|Next lair/i.test(document.getElementById('panel').innerText)), 'Quests tab has no event lair banner');
 
   // --- settings sheet: sound, volume, stats, play log
   await page.locator('#btn-settings').click(); await page.waitForTimeout(400);
@@ -374,7 +365,7 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     return { n: bs.length, ids: bs.map(b => b.getAttribute('data-tab')), clipped: bs.filter(b => { const l = b.querySelector('.t-label'); return l && l.scrollWidth > l.clientWidth + 1; }).length,
       minW: Math.min(...bs.map(b => b.getBoundingClientRect().width)), sw: document.documentElement.scrollWidth };
   });
-  check(tb.n === 6 && tb.ids.join() === 'lair,brood,quests,hoard,legend,ember' && tb.clipped === 0 && tb.minW >= 48 && tb.sw <= 360, '6 tabs fit at 360px ' + JSON.stringify(tb));
+  check(tb.n === 6 && tb.ids.join() === 'lair,brood,quests,hoard,legend,mines' && tb.clipped === 0 && tb.minW >= 48 && tb.sw <= 360, '6 tabs fit at 360px ' + JSON.stringify(tb));
   for (const t of tb.ids) {
     await tab(t);
     await textOk(t + ' @360');
@@ -454,22 +445,111 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     check(/Night Sky/.test(await sp.evaluate(() => document.getElementById('panel').innerText)), 'Starfall' + tag + ': Night Sky section in the Hoard tab');
     await textOk('hoard sky' + tag, sp);
     await sp.screenshot({ path: SHOTS + '/hoard-sky' + tag + '.png' });
-    await sp.locator('#tabs [data-tab="ember"]').click(); await sp.waitForTimeout(500);
-    await sp.evaluate(() => { const n = document.querySelector('[data-sec="ember.lanterns"]'); if (n) n.scrollIntoView({ block: 'center' }); });
+    await sp.locator('#tabs [data-tab="mines"]').click(); await sp.waitForTimeout(500);
+    await sp.evaluate(() => { const n = document.querySelector('[data-sec="mines.lanterns"]'); if (n) n.scrollIntoView({ block: 'center' }); });
     await sp.waitForTimeout(300);
-    const e0 = await sp.evaluate(() => HOARD.state.ember.embers);
-    await sp.locator('[data-sec="ember.lanterns"] button.buy').click();
+    const e0 = await sp.evaluate(() => HOARD.state.mines.ore);
+    await sp.locator('[data-sec="mines.lanterns"] button.buy').click();
     await sp.waitForTimeout(400);
-    check(await sp.evaluate((e) => HOARD.state.sky.lant === 1 && HOARD.state.ember.embers < e, e0), 'Starfall' + tag + ': a Sky Lantern bought with embers');
+    check(await sp.evaluate((e) => HOARD.state.sky.lant === 1 && HOARD.state.mines.ore < e, e0), 'Starfall' + tag + ': a Sky Lantern bought with Ore');
     // holding the button is still one press: one level, never the whole row of lanterns
-    const lb = await sp.locator('[data-sec="ember.lanterns"] button.buy').boundingBox();
+    const lb = await sp.locator('[data-sec="mines.lanterns"] button.buy').boundingBox();
     await sp.mouse.move(lb.x + lb.width / 2, lb.y + lb.height / 2); await sp.mouse.down(); await sp.waitForTimeout(1500); await sp.mouse.up();
     await sp.waitForTimeout(300);
     check(await sp.evaluate(() => HOARD.state.sky.lant === 2), 'Starfall' + tag + ': a 1.5 s hold on Light buys one level (Lv ' + (await sp.evaluate(() => HOARD.state.sky.lant)) + ')');
-    await textOk('ember lanterns' + tag, sp);
-    await sp.screenshot({ path: SHOTS + '/ember-lanterns' + tag + '.png' });
+    await textOk('mines lanterns' + tag, sp);
+    await sp.screenshot({ path: SHOTS + '/mines-lanterns' + tag + '.png' });
     check(serr.length === 0, 'Starfall' + tag + ': no console/page errors' + (serr.length ? ':\n  ' + serr.join('\n  ') : ''));
     await sctx.close();
+  }
+
+  // ================================================================ the live save (Myth 4, Ember converted) at 412 and 360
+  // SPEC-MINES A6/A7: the Mines tab after the conversion, the compact owned-automation card (<= 450 px at 360 wide),
+  // the top bar (Nest, Legend, Auto) inside the screen, no horizontal overflow
+  for (const [SW, SH] of [[412, 915], [360, 780]]) {
+    const tag = '-' + SW;
+    const raw = fs.readFileSync(path.join(__dirname, 'fixtures', 'v2-player-myth4.json'), 'utf8');
+    const mctx = await browser.newContext({ viewport: { width: SW, height: SH }, deviceScaleFactor: 2.6, hasTouch: true, isMobile: true });
+    const mp = await mctx.newPage();
+    const merr = [];
+    mp.on('console', m => { if (m.type() === 'error') merr.push('console: ' + m.text()); });
+    mp.on('pageerror', e => merr.push('pageerror: ' + (e.stack || e.message)));
+    await mctx.addInitScript((r) => {
+      try { if (!sessionStorage.getItem('__fx')) { localStorage.clear(); localStorage.setItem('hoard.save.v1', r); sessionStorage.setItem('__fx', '1'); } } catch (e) {}
+      window.__tl = [];
+      document.addEventListener('DOMContentLoaded', () => new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) window.__tl.push(n.innerText); })
+        .observe(document.getElementById('toasts'), { childList: true }));
+    }, raw);
+    await mp.goto(URL);
+    await mp.waitForFunction(() => window.HOARD && window.HOARD.state && window.HOARD.state.time > 0.3);
+    await mp.waitForFunction(() => window.__tl.some(t => /Event lairs have closed/.test(t)), null, { timeout: 10000 }).catch(() => {});
+    const toastsSeen = await mp.evaluate(() => window.__tl.join(' | '));
+    await mp.evaluate(() => { if (HOARD.ui.sheetOpen()) HOARD.ui.closeSheet(); });
+    await mp.waitForTimeout(400);
+    const m0 = await mp.evaluate(() => ({ open: HOARD.mines.isOpen(HOARD.state), ore: HOARD.state.mines.ore, crews: HOARD.state.mines.units[0], hearth: HOARD.state.mines.hearth, tabs: Array.from(document.querySelectorAll('#tabs [data-tab]')).filter(b => !b.hidden).map(b => b.getAttribute('data-tab')).join() }));
+    check(m0.open && m0.ore >= 59353483 && m0.crews >= 1165 && Math.abs(m0.hearth - 6.9378) < 1e-4 && m0.tabs === 'lair,brood,quests,hoard,legend,mines', 'live save' + tag + ': converted on load (and the Mines dug while the save sat) ' + JSON.stringify(m0));
+    check(/Ember moved to the Mines/.test(toastsSeen) && /Event lairs have closed/.test(toastsSeen), 'live save' + tag + ': the one-time conversion toasts (' + toastsSeen.replace(/\s+/g, ' ').slice(0, 220) + ')');
+    // top bar: Nest, Legend, Auto inside the screen (last visible chip right <= width - 8), no event chip
+    const top = await mp.evaluate(() => {
+      const cs = Array.from(document.querySelectorAll('#top .chips > *')).filter(n => !n.hidden && n.getBoundingClientRect().width > 0);
+      const last = cs[cs.length - 1].getBoundingClientRect();
+      return { ids: cs.map(n => n.id || n.getAttribute('data-chip') || n.className).join(','), right: last.right, iw: innerWidth, sw: document.documentElement.scrollWidth, ev: !!document.querySelector('[data-chip="events"]') };
+    });
+    check(top.right <= top.iw - 8 && top.sw <= top.iw && !top.ev, 'live save' + tag + ': top bar fits ' + JSON.stringify(top));
+    await mp.screenshot({ path: SHOTS + '/live-top' + tag + '.png', clip: { x: 0, y: 0, width: SW, height: 140 } });
+    // mid-swipe (playtest review M3): with the "x5 streak" chip showing, every visible chip still fits on screen
+    await mp.evaluate(() => { window.__stk = HOARD.cave.streak; HOARD.cave.streak = () => 5; });
+    await mp.waitForTimeout(700);
+    const topS = await mp.evaluate(() => {
+      const cs = Array.from(document.querySelectorAll('#top .chips > *')).filter(n => !n.hidden && getComputedStyle(n).display !== 'none' && n.getBoundingClientRect().width > 0);
+      const last = cs[cs.length - 1].getBoundingClientRect();
+      return { ids: cs.map(n => n.id || n.getAttribute('data-chip') || n.className).join(','), right: Math.round(last.right), iw: innerWidth, streak: !document.getElementById('chip-streak').hidden };
+    });
+    check(topS.streak && topS.right <= topS.iw - 8, 'live save' + tag + ': top bar fits while a streak shows ' + JSON.stringify(topS));
+    await mp.screenshot({ path: SHOTS + '/live-top-streak' + tag + '.png', clip: { x: 0, y: 0, width: SW, height: 140 } });
+    await mp.evaluate(() => { HOARD.cave.streak = window.__stk; });
+    await mp.waitForTimeout(400);
+    await mp.locator('#tabs [data-tab="mines"]').click(); await mp.waitForTimeout(500);
+    const mt = await mp.evaluate(() => document.getElementById('panel').innerText);
+    check(/ORE\s*\n\s*[\d.]+[KMBT]/i.test(mt) && /Hearth/.test(mt) && /Gilded Pans/.test(mt) && /Sky Lanterns/.test(mt), 'live save' + tag + ': Mines tab shows Ore, the Hearth, the Forge and the lanterns');
+    await textOk('live mines' + tag, mp);
+    await mp.screenshot({ path: SHOTS + '/live-mines' + tag + '.png', fullPage: true });
+    // SPEC-MINES B8/B11: Dig deeper (one press), a Forge press, hold-to-hire (one play-log entry per hold)
+    const d0 = await mp.evaluate(() => ({ depth: HOARD.state.mines.depth, ore: HOARD.state.mines.ore, cost: HOARD.mines.depthCost(HOARD.state) }));
+    await mp.locator('#panel .mn-shaft .btn').click(); await mp.waitForTimeout(250);
+    const d1 = await mp.evaluate(() => HOARD.state.mines.depth);
+    check(d0.ore >= d0.cost && d1 === d0.depth + 1, 'live save' + tag + ': Dig deeper goes one level deeper (' + d0.depth + ' -> ' + d1 + ')');
+    const f0 = await mp.evaluate(() => HOARD.mines.forgeList(HOARD.state).filter(f => !f.done).sort((a, b) => a.cost - b.cost)[0]);
+    await mp.locator('#panel .mn-forge .btn').first().click(); await mp.waitForTimeout(250);
+    const f1 = await mp.evaluate((id) => HOARD.mines.forgeLevel(HOARD.state, id), f0.id);
+    check(f1 === f0.lv + 1, 'live save' + tag + ': a Forge press buys one level of ' + f0.name + ' (' + f0.lv + ' -> ' + f1 + ')');
+    await mp.evaluate(() => { HOARD.state.tiers[0] = 1e70; HOARD.state.settings.buyAmt = 1; HOARD.ui.markDirty(); });
+    await mp.waitForTimeout(300);
+    const h0 = await mp.evaluate(() => ({ h: HOARD.state.mines.hired[0], logs: HOARD.log.entries().filter(e => e.k === 'mines' && e.d && e.d.type === 'hire').length }));
+    const hl = mp.locator('#panel .mn .card .btn.buy').filter({ hasText: 'Hire' }).first();
+    await hl.scrollIntoViewIfNeeded(); await mp.waitForTimeout(200);
+    const hb = await hl.boundingBox();
+    await mp.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2); await mp.mouse.down(); await mp.waitForTimeout(1300); await mp.mouse.up();
+    await mp.waitForTimeout(300);
+    const h1 = await mp.evaluate(() => ({ h: HOARD.state.mines.hired[0], logs: HOARD.log.entries().filter(e => e.k === 'mines' && e.d && e.d.type === 'hire').map(e => e.d) }));
+    check(h1.h - h0.h >= 3 && h1.logs.length === h0.logs + 1 && h1.logs[h1.logs.length - 1].n === h1.h - h0.h, 'live save' + tag + ': holding Hire hires ' + (h1.h - h0.h) + ' Pick Crews, logged once ' + JSON.stringify(h1.logs.slice(-1)));
+    const tl = await mp.evaluate(() => HOARD.log.entries().filter(e => e.k === 'tab').map(e => e.d.id).join());
+    check(/mines/.test(tl), 'live save' + tag + ': tab changes reach the play log (' + tl + ')');
+    await textOk('live mines after presses' + tag, mp);
+    await mp.locator('#tabs [data-tab="legend"]').click(); await mp.waitForTimeout(500);
+    const al = await mp.evaluate(() => { const c = document.querySelector('#panel .lore-autolist'); const r = c && c.getBoundingClientRect(); return c ? { h: Math.round(r.height), rows: c.querySelectorAll('.lore-al-row').length, minRow: Math.min(...Array.from(c.querySelectorAll('.lore-al-row')).map(n => Math.round(n.getBoundingClientRect().height))), sw: document.documentElement.scrollWidth, iw: innerWidth } : null; });
+    check(!!al && al.rows === 8 && al.minRow >= 44 && al.h <= 450 && al.sw <= al.iw, 'live save' + tag + ': owned automation is one compact card ' + JSON.stringify(al));
+    await mp.evaluate(() => { const c = document.querySelector('#panel .lore-autolist'); if (c) c.scrollIntoView({ block: 'start' }); });
+    await mp.waitForTimeout(200);
+    await textOk('live legend' + tag, mp);
+    const tt = await mp.evaluate(() => { const n = document.querySelector('[data-sec="legend.tithe"]'); return { can: HOARD.engine.canSleep(HOARD.state), t: n ? n.innerText : null }; });
+    check(!tt.can || /^Mines: (this Sleep recruits|a Sleep recruits)/.test(tt.t || ''), 'live save' + tag + ': the Sleep panel says what the Sleep recruits (' + JSON.stringify(tt) + ')');
+    await mp.screenshot({ path: SHOTS + '/live-legend' + tag + '.png' });
+    await mp.locator('#tabs [data-tab="quests"]').click(); await mp.waitForTimeout(500);
+    await textOk('live quests' + tag, mp);
+    await mp.screenshot({ path: SHOTS + '/live-quests' + tag + '.png' });
+    check(merr.length === 0, 'live save' + tag + ': no console/page errors' + (merr.length ? ':\n  ' + merr.join('\n  ') : ''));
+    await mctx.close();
   }
 
   // ================================================================ v1 fixtures -> hoard.save.v1 -> load + reload

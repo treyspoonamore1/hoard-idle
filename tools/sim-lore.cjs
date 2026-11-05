@@ -4,11 +4,11 @@
 //   sleeps when the Legend gain >= ~50% of current Legend, and Ascends once the Myth gives 2 (or after waiting 10 min).
 //   profiles: moderate (open, swipes 30 s/min), active (always swiping), casual (10 min every 30 min),
 //             casual5 (5 min of swiping every 30 min, app closed in between: offline() + offline automation)
-//   env: SEED=n  reproducible Math.random      EMBER=1  also load js/ember.js and js/events.js; the sim player then
-//        buys kilns / Fire Breaths (as tools/test-ember.cjs) and plays the event lair (as tools/test-events.cjs) on a
-//        simulated wall clock (HOARD.events._now = sim time), so event cards feed the main game
-//        NOEVENTS=1 with EMBER=1: Ember only (isolates the event cards' effect on pacing)
-//        STARFALL=1 with EMBER=1: the player also runs a Starfall (js/sky.js) whenever one is ready while swiping:
+//   js/mines.js loads by default (the Mines open at Dragon Rank 7 or with Call the Deep). The sim player's Mines habits
+//   (nuggets while swiping, hires, Forge, Depth) are in tools/mines-bot.cjs; it learns Call the Deep after its 3rd Sleep
+//   when 12 Legend are spare.
+//   env: SEED=n  reproducible Math.random      NOMINES=1  control run without js/mines.js
+//        STARFALL=1 also load js/sky.js: the player also runs a Starfall whenever one is ready while swiping:
 //                 80% of the stars caught for Stardust; as in the game, stars pay no gold and the coin spill keeps
 //                 running (normal swiping not reduced), so gold pacing must match the run without STARFALL exactly
 //                 SFCOINS=n what-if: pay n coins per caught star (E.coinCollected(s, n, 3, 1)); the game pays 0
@@ -17,7 +17,7 @@
 //                 active play until a Long Sleep gives +50% / +100% of L (shows whether runs shrink as Legend grows)
 //        SNAP=dir writes the state right after Sleeps 1,2,3,5,8,12,16,20,30,40,60,80,100 to dir/<profile>-s<n>.json
 //        PROBE=file.json (with CURVE=1): from that saved fresh-run state, minutes of active play to +50% / +100% Legend,
-//                 once as saved and once per ablation (no cards / no event cards / no Myth / no relics / no Ember / no
+//                 once as saved and once per ablation (no cards / no Deep cards / no Myth / no relics / no Mines / no
 //                 Power lore / no Legend passive) -- shows which system drives the run length
 //        OFFPROBE=file.json[,...] [OFFH=8]: from a saved state, compare E.offline(OFFH h) against OFFH h of live idle ticks
 //                 (app open, no swiping; automation runs in both), with Dream Keeper off / at 100% / at 25%
@@ -30,13 +30,14 @@ const root = path.join(__dirname, '..');
 let seed = +process.env.SEED || 777;
 Math.random = function () { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 const files = ['js/data.js', 'js/engine.js', 'js/lore.js'];
-if (process.env.EMBER) { if (!process.env.NOEVENTS) files.push('js/events.js'); files.push('js/ember.js', 'js/sky.js'); }
+if (!process.env.NOMINES) files.push('js/mines.js');
+if (process.env.STARFALL) files.push('js/sky.js');
 for (const f of files) vm.runInThisContext(fs.readFileSync(path.join(root, f), 'utf8'), { filename: f });
-const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.ember, EV = H.events, SKY = H.sky;
+const H = globalThis.HOARD, E = H.engine, D = H.data, C = D.C, L = H.lore, X = H.mines, SKY = H.sky;
 const QB = require('./quest-balance.cjs')(E, D);
+const MB = require('./mines-bot.cjs')(E, X || null);
 const WALL0 = Date.UTC(2026, 10, 3, 8, 0, 0);
 let simT = 0;
-if (EV) EV._now = () => WALL0 + simT * 1000;
 const STARFALL = !!(process.env.STARFALL && SKY);
 if (STARFALL) SKY._now = () => WALL0 + simT * 1000;
 const SFCOINS = process.env.SFCOINS !== undefined ? +process.env.SFCOINS : 0; // what-if coins per caught star (the game: 0)
@@ -172,16 +173,21 @@ function shop(s, prof) {
 // ---------------------------------------------------------------- sensible lore buyer
 // value weight per node (how much a thoughtful player wants it), divided by cost; the best ratio is bought first.
 const WANT = {
-  greed: 1.0, halls: 1.3, clutches: 0.8, dreams: 1.4, bargain: 0.8, talons: 0.6, magpie: 0.5, watch: 0.15,
-  start_gold: 1.6, start_rank: 1.3, start_brood: 0.8, keep_claws: 0.9, keep_broom: 0.5,
+  greed: 3.1, dreams: 1.4, talons: 0.6, magpie: 0.5, watch: 0.15,   // Dragon's Hunger = the old greed + halls + clutches
+  start_gold: 1.6, start_rank: 1.3,
   auto_dig: 0.9, auto_build: 0.9, auto_brood: 0.7, auto_quest: 0.9, auto_chest: 0.8, auto_gust: 0.6, auto_upg: 0.7, auto_sleep: 0.05,
-  wake_ember: 0.6, myth_gate: 0
+  wake_ember: 0, myth_gate: 0   // Call the Deep: bought by its own rule (after the 3rd Sleep, 12 spare Legend)
 };
 const NOLORE = !!process.env.NOLORE, ONLYLORE = process.env.ONLYLORE ? process.env.ONLYLORE.split(',') : null;
 const MINRUN = process.env.MINRUN != null ? +process.env.MINRUN : 90; // a person does not Sleep every few seconds
 const SLEEPPCT = process.env.SLEEPPCT != null ? +process.env.SLEEPPCT : 50;
 function buyLore(s, bought) {
   if (NOLORE) return;
+  // Call the Deep: after the 3rd Sleep, while the Mines are still shut, the player saves 12 Legend for it
+  if (X && !(L.level(s, 'wake_ember') > 0) && !X.isOpen(s) && s.sleeps >= 3) {
+    if (L.canBuy(s, 'wake_ember') && L.buy(s, 'wake_ember')) bought.push('wake_ember');
+    else if (L.reqMet(s, 'wake_ember')) return;
+  }
   for (let g = 0; g < 200; g++) {
     // save up for the Myth gate once Legend gets close to the Myth threshold
     const gateNeeded = !L.mythGated(s) && s.legend >= Math.min(0.5 * L.mythNeed(s), 3 * L.cost(s, 'myth_gate'));
@@ -213,34 +219,6 @@ function buyLore(s, bought) {
   }
 }
 
-// ---------------------------------------------------------------- Ember and event players (EMBER=1)
-function buyEmber(s) {
-  if (!X || !X.isAwake(s)) return;
-  for (let g = 0; g < 300; g++) {
-    const open = X.breathList(s).filter(b => !b.bought);
-    const aff = open.filter(b => b.affordable);
-    if (aff.length) { X.buyBreath(s, aff[0].id); continue; }
-    if (open.length && open[0].cost < X.rate(s) * 300) break;
-    let best = -1, bv = 0;
-    for (let k = 0; k < 4; k++) {
-      if (!X.kilnVisible(s, k)) continue;
-      const c = X.kilnCost(s, k, 1).embers;
-      if (c > X.embers(s)) continue;
-      const v = X.kilnEach(s, k) / c;
-      if (v > bv) { bv = v; best = k; }
-    }
-    if (best < 0) break;
-    X.buyKiln(s, best, 1);
-  }
-}
-function playEvents(s, R) {
-  if (!EV || !EV.active(s)) return;
-  while (EV.questInfo(s).done) { EV.claimQuest(s); R.evClaims.push(simT); }
-  while (s.events.chests > 0) EV.openChest(s);
-  const q = EV.QUESTS[s.events.q];
-  if (q && q.kind === 'own' && s.events.units[q.k] < q.n) EV.buyUnit(s, q.k, Math.min(q.n - Math.floor(s.events.units[q.k]), EV.unitMax(s, q.k)));
-  for (let k = 3; k >= 0; k--) { if (q && q.kind === 'own' && k < q.k && s.events.units[q.k] < q.n) continue; EV.buyUnit(s, k, 'max'); }
-}
 const AUTOSLEEP = process.env.AUTOSLEEP ? +process.env.AUTOSLEEP : 0;
 const DKONLY = !!process.env.DKONLY; // with AUTOSLEEP: once Dream Keeper is on, the sim player leaves every Sleep to it
 // every Long Sleep (the sim player's and Dream Keeper's) is logged: { t, run, gain, before, dk, off, sinceAsc }
@@ -265,7 +243,7 @@ function dkDigest(R) {
 function run(prof) {
   const s = E.newState();
   s.auto.master = true;
-  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {}, evClaims: [], off: [], warm: {}, wake: null, all: [], lastSleepT: 0, lastAscT: 0, ascAt: [], post1h: null };
+  const R = { name: prof.name, T: 0, sleeps: [], myths: [], mythAvail: [], rows: [], loreAt: [], lt: {}, off: [], wake: null, all: [], lastSleepT: 0, lastAscT: 0, ascAt: [], post1h: null };
   curR = R;
   const dt = 0.5, end = HOURS * 3600;
   let pool = 0, poolV = 0, nextTr = 70 + Math.random() * 60, runStart = 0, gustWait = 0, availAt = null;
@@ -312,7 +290,7 @@ function run(prof) {
     }
     if (swiping) {
       const take = Math.min(pool, 4 * dt);
-      if (take > 0) { const avg = poolV / pool; E.coinCollected(s, take, 3, avg); poolV -= take * avg; pool -= take; }
+      if (take > 0) { const avg = poolV / pool; E.coinCollected(s, take, 3, avg); poolV -= take * avg; pool -= take; MB.swipe(s, take); }
       E.strokeCollected(s, 600 * dt, 3);
       E.noteStreak(s, isInt(R.T / 60) ? st.maxStreak : 3);
     }
@@ -322,7 +300,7 @@ function run(prof) {
     if (E.gustReady(s) && (swiping || (autoG && (pool >= 8 || gustWait >= 10))) && E.useGust(s)) {
       const n = Math.floor(pool), avg = n > 0 ? poolV / pool : 0;
       const gv = avg * (1 + (st.gustWorthMult - 1) * Math.min(n, C.gustBonusCoins || n) / Math.max(1, n)); // x3 on <= gustBonusCoins
-      if (n > 0) { E.coinCollected(s, n, swiping ? 3 : 1, gv); pool -= n; poolV -= n * avg; }
+      if (n > 0) { E.coinCollected(s, n, swiping ? 3 : 1, gv); pool -= n; poolV -= n * avg; MB.swipe(s, n); }
       const fl = Math.max(0, (C.gustFloorCoins || 0) - n);
       if (fl > 0) E.coinCollected(s, fl, swiping ? 3 : 1, st.gustWorthMult);
       gustWait = 0;
@@ -339,16 +317,13 @@ function run(prof) {
     QB.track(R, s, dt);
     R.T += dt;
     if (isInt(R.T)) { // ---- player decisions once per second
-      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { QB.claim(R, s, i); i = -1; }
+      for (let i = 0; i < 3; i++) if (E.missionInfo(s, i).done) { const tp = s.missions[i].tpl, r = QB.claim(R, s, i); if (r && r.ok) MB.claimed(R, tp); i = -1; }
       while (s.chests > 0) E.openChest(s);
       if (prof.buys(R.T)) shop(s, prof);
+      MB.act(s, R.T, R);
       buyLore(s, bought);
       if (AUTOSLEEP && L.level(s, 'auto_sleep') > 0 && !s.auto.sleep) { s.auto.sleep = true; s.auto.sleepPct = AUTOSLEEP; }
-      buyEmber(s); playEvents(s, R);
-      if (X && X.isAwake(s)) {
-        if (R.wake == null) R.wake = R.T;
-        for (const m of [600, 3600, 10800]) if (R.warm[m] == null && R.T - R.wake >= m) R.warm[m] = X.warmth(s);
-      }
+      if (X && R.wake == null && X.isOpen(s)) R.wake = R.T;
       if (L.canAscend(s) && availAt == null) { availAt = R.T; R.mythAvail.push(R.T); }
       const mg = L.mythOnAscend(s);
       if (L.canAscend(s) && (mg >= 2 || R.T - availAt >= 600)) {
@@ -433,8 +408,7 @@ function report(R) {
   console.log('first choices: ' + R.sleeps.slice(0, 3).map((x, i) => 'S' + (i + 1) + '[' + (x.bought.join(' ') || '-') + ']').join(' ') +
     ' | first automation at Sleep ' + (R.sleeps.findIndex(x => x.bought.some(b => /^auto_/.test(b))) + 1));
   if (STARFALL) console.log('Starfall: ' + R.sf + ' Starfalls, stage ' + (SKY.stage(s) + 1) + ' ' + SKY.stageName(s) + ', Stardust ' + Math.round(s.sky.xp) + ', lanterns ' + s.sky.lant + ', best catch ' + s.sky.bestPct + '%');
-  if (X) console.log('Ember: woke at ' + hm(R.wake) + ', warmth +10m x' + (R.warm[600] || 0).toFixed(2) + ', +1h x' + (R.warm[3600] || 0).toFixed(2) + ', +3h x' + (R.warm[10800] || 0).toFixed(2) + ', final x' + X.warmth(s).toFixed(2));
-  if (EV) console.log('Event: quests claimed at (h) ' + (R.evClaims.map(t => (t / 3600).toFixed(1)).join(' ') || '-') + ' | step ' + (s.events ? s.events.q : '-') + '/10');
+  if (X) console.log(MB.report(R, s));
   if (R.off.length) {
     const offG = R.off.reduce((a, o) => a + o.gold, 0), mx = R.off.reduce((a, o) => Math.max(a, o.sec > 0 ? o.gold / o.sec / Math.max(1e-9, o.gps0) : 0), 0);
     const offS = R.off.reduce((a, o) => a + o.sleeps, 0);
@@ -472,16 +446,16 @@ function timeTo(s, Lg, prof) {
 function probe(file) {
   const base = fs.readFileSync(file, 'utf8');
   const s0 = E.deserialize(base);
-  console.log(path.basename(file) + ': Legend ' + f(s0.legend) + ', myth ' + s0.myth + ', cards ' + Object.keys(s0.cards).length + ' (' + Object.values(s0.cards).reduce((a, b) => a + b, 0) + ' copies), warmth x' + (X ? X.warmth(s0).toFixed(2) : '-') + ', lore ' + JSON.stringify(s0.lore));
-  const power = ['greed', 'halls', 'clutches', 'dreams', 'bargain', 'talons', 'magpie'];
+  console.log(path.basename(file) + ': Legend ' + f(s0.legend) + ', myth ' + s0.myth + ', cards ' + Object.keys(s0.cards).length + ' (' + Object.values(s0.cards).reduce((a, b) => a + b, 0) + ' copies), Hearth x' + (X ? X.hearth(s0).toFixed(2) : '-') + ', lore ' + JSON.stringify(s0.lore));
+  const power = ['greed', 'dreams', 'talons', 'magpie'];
   const abl = {
     'as saved': s => s,
     'no cards': s => { s.cards = {}; },
-    'no event cards': s => { for (const k of Object.keys(s.cards)) if (/^ev_/.test(k)) delete s.cards[k]; },
+    'no Deep cards': s => { for (const k of Object.keys(s.cards)) if (/^ev_/.test(k)) delete s.cards[k]; },
     'no v1 cards': s => { for (const k of Object.keys(s.cards)) if (!/^ev_/.test(k)) delete s.cards[k]; },
     'no Myth': s => { s.myth = 0; },
     'no relics': s => { s.relics = {}; },
-    'no Ember': s => { if (s.ember) s.ember.awake = false; s.lore.wake_ember = 0; },
+    'no Mines': s => { if (s.mines) { s.mines.open = false; s.mines.hearth = 1; } s.lore.wake_ember = 0; },
     'no Power lore': s => { for (const k of power) s.lore[k] = 0; },
     'no Legend passive': s => { s._noLegendPassive = true; }
   };

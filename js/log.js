@@ -122,12 +122,33 @@
       if (k === 'snap') return t + 'Gold ' + f(d.gold) + ', ' + f(d.gps) + '/s, rank ' + num(d.rank);
       if (k === 'session') return t + 'Session start (' + (d.why || '') + ')';
       if (k === 'session_end') return t + 'Session end';
-      if (k === 'event') return t + 'Event: ' + (d.type || '') + (d.lair ? ' ' + d.lair : '');
+      if (k === 'mines') return t + minesLine(d);
+      if (k === 'tab') return t + 'Opened the ' + String(d.id || '') + ' tab';
+      if (k === 'sheet') return t + 'Opened: ' + String(d.id || '');
       if (k === 'migrate') return t + 'Save upgraded v' + num(d.from) + ' to v' + num(d.to) + ' (' + f(d.legendPts) + ' Legend to spend)';
     } catch (e) { /* fall through */ }
     return t + String(k).replace(/_/g, ' ');
   }
   LOG.pretty = pretty;
+  function minesLine(d) {
+    var X = HOARD.mines, T = X && X.TIERS ? X.TIERS : [];
+    var tn = function (k, n) { var t = T[k]; return t ? (num(n) === 1 ? t.one : t.name) : 'miners'; };
+    var list = function (a) { var o = []; if (Array.isArray(a)) for (var k = a.length - 1; k >= 0; k--) if (num(a[k]) >= 1) o.push('+' + f(a[k]) + ' ' + tn(k, a[k])); return o.join(', ') || 'nothing'; };
+    switch (d.type) {
+      case 'open': return 'The Mines opened';
+      case 'conv': return 'Ember moved to the Mines (' + f(d.ore) + ' Ore, Hearth ×' + num(d.hearth) + ', ' + f(d.crews) + ' Pick Crews)';
+      case 'eventsConv': return 'Event lairs closed (+' + f(d.ore) + ' Ore)';
+      case 'tithe': return 'Leftover Eggs recruited ' + list(d.n);
+      case 'hire': return 'Hired ' + f(d.n) + ' ' + tn(d.k, d.n);
+      case 'forge': return 'Forge: ' + nameOfForge(d.id) + ' level ' + num(d.lv);
+      case 'depth': return 'Shaft Depth ' + num(d.d);
+      case 'chest': return 'Deep Chest ' + num(d.n) + ': ' + nameOfCard(d.card);
+      case 'away': return 'The Mines dug ' + f(d.ore) + ' Ore while away';
+    }
+    return 'Mines: ' + String(d.type || '');
+  }
+  function nameOfForge(id) { var X = HOARD.mines; if (X && X.FORGE) for (var i = 0; i < X.FORGE.length; i++) if (X.FORGE[i].id === id) return X.FORGE[i].name; return String(id); }
+  function nameOfCard(id) { var D = HOARD.data; if (D && D.cards) for (var i = 0; i < D.cards.length; i++) if (D.cards[i].id === id) return D.cards[i].name; return String(id); }
   LOG.text = function (n) {
     var list = n ? ring.slice(-n) : ring;
     return list.map(line).join('\n');
@@ -249,7 +270,7 @@
       if (sess.snapAcc >= SNAP_SEC) {
         sess.snapAcc = 0;
         var st = E.stats(s);
-        event('snap', { gold: Math.round(num(s.gold)), gps: r1(st.gps), rank: num(s.rank), earnedRun: Math.round(num(s.earnedRun)), legend: num(s.legend), legendPts: num(s.legendPts), sleeps: num(s.sleeps), active: Math.round(sess.active) });
+        event('snap', mineBits(s, { gold: Math.round(num(s.gold)), gps: r1(st.gps), rank: num(s.rank), earnedRun: Math.round(num(s.earnedRun)), legend: num(s.legend), legendPts: num(s.legendPts), sleeps: num(s.sleeps), active: Math.round(sess.active) }));
       }
     }
     if (db && !busy && now - lastWrite >= CLOUD_MS) writeCloud();
@@ -287,6 +308,18 @@
     event('session', { why: why, v: (E && E.version) || 2, rank: num(s.rank), legend: num(s.legend), legendPts: num(s.legendPts), sleeps: num(s.sleeps), gold: Math.round(num(s.gold)) });
   }
 
+  // the Mines' numbers for snap / run entries (SPEC-MINES B9); nothing while the Mines are closed
+  function mineBits(s, d) {
+    var X = HOARD.mines;
+    if (!X || !s || typeof X.isOpen !== 'function' || !X.isOpen(s)) return d;
+    var m = s.mines || {}, u = Array.isArray(m.units) ? m.units : [];
+    d.ore = Math.round(num(m.ore));
+    d.oreRate = r1(X.oreRate(s));
+    d.units = [0, 1, 2, 3].map(function (k) { return Math.floor(num(u[k])); });
+    d.depth = Math.floor(num(m.depth));
+    return d;
+  }
+
   // ---------------------------------------------------------------- engine subscriptions
   function subscribe() {
     E.on('rank', function (r) { event('rank', { rank: r }); });
@@ -295,7 +328,7 @@
     E.on('chest', function (cards) { event('chest', { cards: cards }); });
     E.on('lore', function (x) { event('lore', x); });
     E.on('myth', function (g) { event('myth', { gained: g }); });
-    E.on('event', function (x) { event('event', x); });
+    E.on('mines', function (x) { event('mines', x); });
     E.on('buy', function (b) {
       if (!b) return;
       if (b.kind === 'upgrade') { event('upgrade', { id: b.id }); return; }
@@ -316,12 +349,12 @@
       var newLore = [];
       var lore0 = meta.runStartLore || {}, lore1 = prev.lore || {};
       for (var id in lore1) if (Object.prototype.hasOwnProperty.call(lore1, id) && num(lore1[id]) > num(lore0[id])) newLore.push(id + ':' + lore1[id]);
-      event('run', {
+      event('run', mineBits(state, {
         reason: reason, active: Math.round(num(prev.run && prev.run.playActive)), wall: meta.runStartAt ? Math.round((now - meta.runStartAt) / 1000) : null,
         legendGained: reason === 'ascend' ? 0 : num(state.legend) - num(prev.legend), legend: num(prev.legend),
         mythGained: Math.max(0, num(state.myth) - num(prev.myth)), rank: num(prev.rank), earned: Math.round(num(prev.earnedRun)),
         buildings: prev.buildings, lore: newLore, sleeps: num(state.sleeps)
-      });
+      }));
       meta.runStartAt = now;
       meta.runStartLore = E.util.clone(state.lore || {});
       meta.runBuys = {};

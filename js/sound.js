@@ -5,7 +5,7 @@
  *
  *   HOARD.sound.play(name, data)   'coin' {n, streak} | 'streakUp' {mult} | 'gust' | 'treasure' {kind} | 'buy' {kind}
  *                                  | 'rank' | 'sleep' | 'chest' {cards:[id], auto} | 'lore' {relic} | 'myth'
- *                                  | 'emberWake' | 'eventStart' | 'questDone' | 'preview'
+ *                                  | 'minesOpen' | 'skyStart' | 'questDone' | 'preview'
  *   HOARD.sound.unlock()           create/resume the AudioContext (called on the first pointerdown by itself)
  *   HOARD.sound.enabled(s) / volume(s) / setEnabled(s, v) / setVolume(s, v)   state.settings.sound / .volume
  *   HOARD.sound.info()             { state, voices, played:{name:n}, dropped }
@@ -25,7 +25,7 @@
 
   // minimum seconds between two plays of the same sound (coin: <= 12/s, SPEC-V2 4)
   var GAP = { coin: 1 / 12, buy: 0.085, streakUp: 0.12, gust: 0.35, treasure: 0.3, rank: 0.7, sleep: 2.5,
-    chest: 0.2, lore: 0.1, myth: 3, emberWake: 2, eventStart: 1, questDone: 0.3, preview: 0.12 };
+    chest: 0.2, lore: 0.1, myth: 3, minesOpen: 2, skyStart: 1, questDone: 0.3, preview: 0.12 };
 
   var ctx = null, out = null, send = null, master = null, noiseBuf = null;
   var factory = null;          // test hook: () -> AudioContext-like
@@ -38,7 +38,7 @@
   // trims measured by rendering each sound offline (tools: OfflineAudioContext): at 40% volume the loud,
   // rare moments (rank, sleep, myth) peak near -16 dBFS, everyday sounds (coins, buys) near -26 dBFS
   var LEVEL = { coin: 5.6, preview: 5.6, buy: 3.2, streakUp: 4, gust: 3.2, treasure: 4, rank: 3.2, sleep: 3.2, chest: 3.5,
-    lore: 4, myth: 3.2, emberWake: 3.4, eventStart: 3, questDone: 3.8 };
+    lore: 4, myth: 3.2, minesOpen: 3.4, skyStart: 3, questDone: 3.8 };
 
   // ---------------------------------------------------------------- settings
   function S() { try { return getState ? getState() : (HOARD.state || null); } catch (e) { return null; } }
@@ -322,11 +322,12 @@
     },
     buy: function (d) {
       var kind = d && d.kind;
-      var f = kind === 'tier' ? 200 : (kind === 'kiln' ? 125 : 160);
+      var f = kind === 'tier' ? 200 : (kind === 'lantern' ? 125 : 160);
       f *= jitter(60);
       tone({ f: f, f2: f * 0.48, glide: 0.08, a: 0.003, d: 0.09, g: 0.14 });
       noise({ type: 'lowpass', f: 900, q: 0.4, a: 0.002, d: 0.03, g: 0.035 });
       if (kind === 'upgrade') bell(1174.7, 0.03, 0.04, 0.3, 0.3, 0);
+      if (kind === 'miner') bell(1567.98 * jitter(40), 0.01, 0.02, 0.16, 0.16, 0);   // a pick on stone
     },
     rank: function () {
       var notes = [523.25, 659.25, 783.99];                  // C5 E5 G5
@@ -389,12 +390,12 @@
       }
       [0, 4, 7, 12].forEach(function (n, k) { bell(semi(1046.5, n), 1.9 + k * 0.1, 0.045, 1.2, 0.7, (k % 2 ? 0.3 : -0.3)); });
     },
-    emberWake: function () {
+    minesOpen: function () {
       tone({ f: 98, type: 'triangle', a: 0.6, hold: 0.3, d: 1.6, g: 0.06, wet: 0.5, lp: 600 });
       for (var i = 0; i < 7; i++) noise({ type: 'bandpass', f: 1800 + Math.random() * 2400, q: 8, a: 0.002, d: 0.035, g: 0.05, t: 0.15 + i * 0.13 + Math.random() * 0.06, pan: (Math.random() - 0.5) * 0.8 });
       bell(587.33, 0.5, 0.04, 0.9, 0.5, -0.1);
     },
-    eventStart: function () {
+    skyStart: function () {                                  // a Starfall begins: three rising bells
       [0, 4, 7].forEach(function (n, k) { bell(semi(698.46, n), k * 0.09, 0.05, 0.6, 0.5, (k - 1) * 0.25); });
     },
     questDone: function () {
@@ -455,18 +456,7 @@
     E.on('chest', function (cards) { chestEvent(cards, !!(E.inAuto && E.inAuto())); });   // Chest Kobold: quiet
     E.on('lore', function (d) { play('lore', d); });
     E.on('myth', function () { play('myth'); });
-    E.on('ember', function (d) {
-      if (!d) return;
-      if (d.type === 'wake') play('emberWake');
-      else if (d.type === 'breath') play('lore');
-    });
-    E.on('event', function (d) {
-      if (!d) return;
-      if (d.type === 'start') play('eventStart');
-      else if (d.type === 'quest' && !d.auto) play('questDone');
-      else if (d.type === 'complete') play('rank');
-      else if (d.type === 'chest') chestEvent(d.cards, d.auto);
-    });
+    E.on('mines', function (d) { if (d && d.type === 'open') play('minesOpen'); });
   }
   function caveHook(name, d) {
     if (name === 'coin' || name === 'streakUp' || name === 'gust' || name === 'treasure') play(name, d);
